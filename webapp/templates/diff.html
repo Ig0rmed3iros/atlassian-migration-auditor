@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block topbar %}
+<div class="topbar">
+  <div class="crumb">
+    <a href="{{ '/environments' if run.kind == 'env_audit' else '/' }}">{{ 'Environment audits' if run.kind == 'env_audit' else 'Migration audits' }}</a>
+    <span class="sep">/</span><span>{{ mig.name }}</span>
+    <span class="sep">/</span><b>Run #{{ run.id }} · compare</b>
+  </div>
+  <div class="spacer"></div>
+  <a class="btn ghost sm" href="/runs/{{ run.id }}/analysis">Back to analysis</a>
+</div>
+{% endblock %}
+
+{% block content %}
+<h1 class="h1" style="margin-top:0">Compare run #{{ run.id }} to a previous run</h1>
+<p class="sub">See what your fixes resolved and what's new since an earlier audit of the same target.</p>
+
+{% if candidates %}
+<form method="get" action="/runs/{{ run.id }}/diff" style="margin-top:14px">
+  <label class="sub">Baseline run:
+    <select name="base" onchange="this.form.submit()">
+      <option value="">— select a previous run —</option>
+      {% for c in candidates %}
+      <option value="{{ c.id }}" {{ 'selected' if c.id == base else '' }}>Run #{{ c.id }} ({{ c.verdict or c.status }})</option>
+      {% endfor %}
+    </select>
+  </label>
+  <noscript><button class="btn sm" type="submit">Compare</button></noscript>
+</form>
+{% else %}
+<p class="sub" style="margin-top:14px">No earlier completed run of this audit type to compare against yet.</p>
+{% endif %}
+
+{% if diff %}
+<div class="card pad" style="margin-top:18px">
+  <b>Run #{{ diff.base_run_id }} → #{{ diff.new_run_id }}:</b>
+  <span style="color:var(--red);font-weight:600">{{ diff.new|length }} new</span> ·
+  <span style="color:var(--green);font-weight:600">{{ diff.resolved|length }} resolved</span> ·
+  {{ diff.unchanged_count }} unchanged
+  <span class="sub">({{ diff.base_count }} → {{ diff.new_count }} findings total)</span>
+</div>
+
+{% macro flabel(f) %}{% if diff.audit_type == 'env' %}{{ f.area }} / {{ f.name }}{% else %}{{ f.project }} / {{ f.src_key }}{% if f.field %} · {{ f.field }}{% endif %}{% endif %}{% endmacro %}
+
+{% if diff.new %}
+<h2 class="h2" style="margin-top:18px;color:var(--red)">New findings ({{ diff.new|length }})</h2>
+<div class="card pad"><table>
+  <thead><tr><th scope="col">Kind</th><th scope="col">Where</th><th scope="col">Severity</th></tr></thead>
+  <tbody>{% for f in diff.new %}<tr><td><code class="mono">{{ f.kind }}</code></td><td>{{ flabel(f) }}</td><td>{{ f.severity }}</td></tr>{% endfor %}</tbody>
+</table></div>
+{% endif %}
+
+{% if diff.resolved %}
+<h2 class="h2" style="margin-top:18px;color:var(--green)">Resolved since baseline ({{ diff.resolved|length }})</h2>
+<div class="card pad"><table>
+  <thead><tr><th scope="col">Kind</th><th scope="col">Where</th><th scope="col">Severity</th></tr></thead>
+  <tbody>{% for f in diff.resolved %}<tr><td><code class="mono">{{ f.kind }}</code></td><td>{{ flabel(f) }}</td><td>{{ f.severity }}</td></tr>{% endfor %}</tbody>
+</table></div>
+{% endif %}
+
+{% if not diff.new and not diff.resolved %}
+<p class="sub" style="margin-top:18px">No change between these two runs — same {{ diff.new_count }} finding(s).</p>
+{% endif %}
+{% endif %}
+{% endblock %}

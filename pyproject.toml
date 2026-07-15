@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "migration-auditor"
+version = "0.3.0"
+description = "Atlassian audit platform — migration & environment audits (Jira and Confluence, Cloud or Data Center): item fidelity, config parity, environment health, interactive analysis."
+requires-python = ">=3.11"
+dependencies = [
+  # Floors raised for CVE hygiene (2026-06): fastapi>=0.115 pulls a Starlette
+  # past the BadHost DoS; jinja2>=3.1.6 clears CVE-2024-56326/56201/27516/
+  # 22195/34064; python-multipart>=0.0.18 clears the multipart DoS CVEs;
+  # cryptography>=44 ships current OpenSSL. uvicorn/httpx kept current.
+  "fastapi>=0.115",
+  # Starlette is imported directly (BaseHTTPMiddleware in webapp/main.py), so
+  # declare it explicitly rather than relying on fastapi's transitive pin.
+  "starlette>=0.40",
+  "uvicorn>=0.29",
+  "httpx>=0.27",
+  "jinja2>=3.1.6",
+  "cryptography>=44",
+  "python-multipart>=0.0.18",
+  "anthropic>=0.40",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+# Optional: enables the OpenAI-compatible AI-analysis provider (custom base_url
+# via the official openai SDK). Lazily imported — the app runs without it.
+openai = ["openai>=1.0"]
+# Optional: one-click PDF export of the executive-summary report. Lazily
+# imported — the HTML report + the rest of the app work without it. Floor >=68
+# clears the WeasyPrint resource-fetch / SSRF-class CVE fixes (<60.x/61.x were
+# affected); the app also passes a hardening url_fetcher as defense in depth.
+pdf = ["weasyprint>=68"]
+
+[project.scripts]
+migration-auditor = "webapp.main:cli"
+
+[tool.setuptools]
+packages = [
+    "auditor",
+    "auditor.confluence",
+    "auditor.envaudit",
+    "auditor.remediation",
+    "webapp",
+]
+
+[tool.setuptools.package-data]
+webapp = ["templates/*.html", "static/*"]

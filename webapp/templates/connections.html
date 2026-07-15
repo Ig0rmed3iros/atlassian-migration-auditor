@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+
+{#
+  Connection Vault — reusable, encrypted Jira/Confluence PAT credentials.
+  Define a site + token once; SELECT it from a dropdown when configuring an
+  audit (migration.html). Tokens are write-only: never rendered back here.
+#}
+
+{% block topbar %}
+<div class="topbar">
+  <div class="crumb"><a href="/">Migrations</a><span class="sep">/</span><b>Connections</b></div>
+  <div class="spacer"></div>
+</div>
+{% endblock %}
+
+{% block content %}
+{% if saved %}
+<div class="flash ok">
+  <svg width="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>
+  Saved.
+</div>
+{% endif %}
+{% if flash %}
+<div class="banner err">
+  <svg width="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4m0 4h.01"/></svg>
+  <span>{{ flash }}</span>
+</div>
+{% endif %}
+
+<h1 class="h1">Connections</h1>
+<p class="sub">A library of reusable, encrypted Jira and Confluence credentials. Define a site and
+  API token once, then select it from a dropdown when you connect an audit. Credentials are stored
+  encrypted on this machine and never leave it. Looking for the Anthropic key?
+  <a href="/settings" class="text-cyan">It lives in Settings →</a></p>
+
+{# ---- saved connections list ---- #}
+<div class="section-h" style="margin-top:24px">Saved connections</div>
+{% if connections %}
+<div class="mig-list" style="margin-top:0">
+  {% for c in connections %}
+  <div class="card mig" style="grid-template-columns:1fr auto auto auto;align-items:center">
+    <div>
+      <div class="nm">{{ c.name }}</div>
+      <div class="meta">
+        <span><span class="product-chip mono">{{ c.product }}</span></span>
+        <span class="mono">{{ c.deployment }}</span>
+        <span class="mono">{{ (c.site_url or "").replace("https://","").rstrip("/") }}</span>
+        {% if c.account_email %}<span class="mono">{{ c.account_email }}</span>{% endif %}
+      </div>
+    </div>
+    {% if c.status == 'verified' %}
+    <span class="verified">
+      <svg width="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>
+      verified
+    </span>
+    {% else %}
+    <span class="pill v-tails"><span class="dot"></span>UNVERIFIED</span>
+    {% endif %}
+    <form method="post" action="/connections/{{ c.id }}/verify" style="margin:0">
+      <button class="btn ghost sm" type="submit">Verify</button>
+    </form>
+    <form method="post" action="/connections/{{ c.id }}/delete" style="margin:0">
+      <button class="btn ghost sm" type="submit">Delete</button>
+    </form>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card pad"><span class="muted">No saved connections yet. Add one below to reuse it across audits.</span></div>
+{% endif %}
+
+{# ---- new connection form ---- #}
+<div class="section-h" style="margin-top:30px">New connection</div>
+<div class="card pad pat-card" style="margin-top:12px">
+  <div class="row" style="align-items:flex-start;gap:14px">
+    <div class="ico" style="width:38px;height:38px;border-radius:9px;display:grid;place-items:center;background:var(--bg-elevated);border:1px solid var(--border-dim);flex:0 0 auto">
+      <svg width="20" viewBox="0 0 24 24" fill="none" stroke="var(--cyan-vivid)" stroke-width="2"><path d="M21 2l-2 2m-7.6 7.6a5 5 0 1 1-7 7 5 5 0 0 1 7-7zm0 0L15 8m0 0l3 3 3-3-3-3"/></svg>
+    </div>
+    <div>
+      <h4 style="margin:0 0 3px;font-size:15px;font-weight:600;color:var(--text-primary)">API token (PAT)</h4>
+      <p style="margin:0;color:var(--text-secondary);font-size:12.5px;line-height:1.45">Give it a label, pick the product and deployment, then paste the site URL, your email, and an Atlassian API token. Stored encrypted on this machine. The token is write-only — it is never shown again.</p>
+    </div>
+  </div>
+  <form method="post" action="/connections" style="margin-top:6px;max-width:520px">
+    <div class="field"><label>Name</label>
+      <input name="name" placeholder="e.g. Acme Prod (Cloud)" required></div>
+    <div class="field"><label>Product</label>
+      <select name="product">
+        <option value="jira" selected>Jira</option>
+        <option value="confluence">Confluence</option>
+      </select></div>
+    <div class="field"><label>Deployment</label>
+      <select name="deployment">
+        <option value="cloud" selected>Cloud</option>
+        <option value="dc">Data Center</option>
+      </select></div>
+    <div class="field"><label>Site URL</label>
+      <input class="mono" name="site_url" placeholder="https://your-site.atlassian.net" required></div>
+    <div class="field" data-email-field><label>Email</label>
+      <input name="email" type="email" placeholder="you@example.com" required>
+      <div class="hint">Cloud authenticates as email + API token; Data Center uses the token alone.</div></div>
+    <div class="field"><label>API token</label>
+      <input class="mono" name="api_token" type="password" placeholder="ATATT••••your-api-token••••" required></div>
+    <div class="hint">Cloud: id.atlassian.com → Security → API tokens · Data Center: profile → Personal Access Tokens</div>
+    <div style="margin-top:14px">
+      <button class="btn" type="submit">Save &amp; verify
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </button>
+    </div>
+  </form>
+</div>
+
+<style>
+  /* deployment / product <select> — mirror the .field input chrome (app.css is frozen) */
+  .field select {
+    width: 100%;
+    padding: 9px 11px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-mid);
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 13.5px;
+    color: var(--text-primary);
+  }
+  .field select:focus {
+    outline: none;
+    border-color: var(--cyan-border);
+    box-shadow: 0 0 0 3px rgba(34,211,238,0.12);
+  }
+</style>
+
+{# ---- deployment toggle: DC is token-only (no email) ---- #}
+<script>
+(function () {
+  document.querySelectorAll('select[name=deployment]').forEach(function (sel) {
+    var form = sel.closest('form');
+    if (!form) return;
+    var emailField = form.querySelector('[data-email-field]');
+    var emailInput = emailField && emailField.querySelector('input[name=email]');
+    function apply() {
+      var dc = sel.value === 'dc';
+      if (emailField) emailField.hidden = dc;
+      if (emailInput) emailInput.required = !dc;
+    }
+    sel.addEventListener('change', apply);
+    apply();
+  });
+})();
+</script>
+{% endblock %}

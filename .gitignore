@@ -1,0 +1,17 @@
+
+# Local-only review artifacts (not committed)
+*.db
+*.db-*
+*.egg-info/
+*.pyc
+.env
+.key
+.pytest_cache/
+__pycache__/
+_design/
+_review/
+build/
+data/
+dist/
+migration_auditor.egg-info/
+node_modules/

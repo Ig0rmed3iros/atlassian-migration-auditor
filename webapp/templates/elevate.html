@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Permission elevation — run #{{ run.id }}</h1>
+<p class="lead">Blind-spotted projects (search sees fewer issues than exist).
+Granting adds YOUR account to each project's Administrators role on that side.
+It is recorded and undoable. Re-run the audit afterwards.</p>
+<table class="data"><thead><tr><th scope="col">Project</th><th scope="col">src count</th><th scope="col">tgt count</th></tr></thead>
+<tbody>
+{% for r in rows %}<tr><td>{{ r.key }}</td><td>{{ r.src_count }}</td><td>{{ r.tgt_count }}</td></tr>
+{% else %}<tr><td colspan="3">No blind spots recorded on this run.</td></tr>{% endfor %}
+</tbody></table>
+<div class="row">
+{% for side in ["source", "target"] %}
+  <form method="post" action="/runs/{{ run.id }}/elevate">
+    <input type="hidden" name="side" value="{{ side }}">
+    <button class="danger">Grant on {{ side }}</button>
+  </form>
+  <form method="post" action="/runs/{{ run.id }}/elevate/undo">
+    <input type="hidden" name="side" value="{{ side }}">
+    <button {% if (side == 'source' and not undo_src) or (side == 'target' and not undo_tgt) %}disabled{% endif %}>
+      Undo {{ side }}</button>
+  </form>
+{% endfor %}
+</div>
+{% endblock %}

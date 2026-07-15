@@ -1,0 +1,267 @@
+{% extends "base.html" %}
+
+{% block topbar %}
+<div class="topbar">
+  <div class="crumb"><a href="/">Migrations</a><span class="sep">/</span><b>Settings</b></div>
+  <div class="spacer"></div>
+</div>
+{% endblock %}
+
+{% block content %}
+{% if saved %}
+<div class="flash ok">
+  <svg width="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>
+  Saved.
+</div>
+{% endif %}
+
+<h1 class="h1">Settings</h1>
+<p class="sub">Application-level configuration for this local Atlassian Audit Platform instance.</p>
+
+<div class="card pad set-panel">
+  <div class="set-head">
+    <div class="set-ico">
+      <svg width="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.6 7.6a5 5 0 1 1-7 7 5 5 0 0 1 7-7zm0 0L15 8m0 0l3 3 3-3-3-3"/></svg>
+    </div>
+    <div>
+      <h2 class="set-ttl">Connections are configured per migration</h2>
+      <p class="set-sub">There is nothing to set up here first. Each migration connects its
+        own <span class="text-cyan">source</span> and <span class="text-cyan">target</span> site
+        with a Jira email and an Atlassian API token (PAT). Credentials are stored encrypted on this
+        machine and never leave it. To reuse a site + token across audits, save it in the
+        <a href="/connections" class="text-cyan">Connections vault →</a></p>
+    </div>
+  </div>
+
+  <ol class="set-steps">
+    <li>
+      <span class="set-step-n mono">1</span>
+      <div>
+        <b>Generate an API token.</b>
+        <p>Visit <span class="kbd"><code>id.atlassian.com</code> → Security → API tokens</span>
+          and create a token for the account you use on each site.</p>
+      </div>
+    </li>
+    <li>
+      <span class="set-step-n mono">2</span>
+      <div>
+        <b>Open a migration and connect.</b>
+        <p>Paste the site URL, email, and token for the source and the target. The auditor
+          verifies each connection before you continue.</p>
+      </div>
+    </li>
+    <li>
+      <span class="set-step-n mono">3</span>
+      <div>
+        <b>Run the audit.</b>
+        <p>Pick the projects to compare and get a verdict. No global keys to manage.</p>
+      </div>
+    </li>
+  </ol>
+
+  <div class="set-foot">
+    <a class="btn" href="/">
+      Go to migrations
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+    </a>
+    <span class="set-note mono">e.g. Acme DC → Globex Cloud</span>
+  </div>
+</div>
+
+{# Anthropic API key — powers the "Find solutions" web search on findings.
+   Stored Fernet-encrypted on this machine; submitting blank leaves it unchanged. #}
+<form method="post" action="/settings" class="card pad set-panel set-key">
+  <h2 class="set-ttl">Find solutions (web search)</h2>
+  <p class="set-sub">Add an <span class="text-cyan">Anthropic API key</span> to let the auditor
+    search Atlassian's documentation, community, and support KB for known fixes to a finding.
+    The key is stored encrypted on this machine and never leaves it.
+    <b>Find Solutions requires Anthropic</b> (it uses Claude's web-search tool); the
+    OpenAI-compatible option below applies only to the environment-audit AI analysis.</p>
+  <div class="field">
+    <label for="anthropic_api_key">Anthropic API key
+      {% if has_anthropic_key %}<span class="set-key-set mono">key set</span>{% endif %}
+    </label>
+    <input class="mono" type="password" id="anthropic_api_key" name="anthropic_api_key"
+      autocomplete="off" placeholder="{{ 'leave blank to keep current key' if has_anthropic_key else 'sk-ant-...' }}">
+  </div>
+  <div class="set-foot">
+    <button class="btn" type="submit">Save key</button>
+  </div>
+</form>
+
+{# Environment-audit AI analysis provider — Anthropic OR an OpenAI-compatible
+   endpoint (custom base URL via the official openai SDK). The OpenAI key is
+   write-only and stored Fernet-encrypted; submitting it blank keeps the
+   current key. The metadata-only privacy boundary is identical for both
+   providers — the same allowlisted config metadata is sent to whichever is
+   selected. #}
+<form method="post" action="/settings" class="card pad set-panel set-key">
+  <h2 class="set-ttl">Environment-audit AI analysis</h2>
+  <p class="set-sub">Choose which AI provider runs the environment-audit assessment.
+    Currently active: <span class="text-cyan mono">{{ ai_provider_choice }}</span>
+    {% if active_provider_configured %}
+      <span class="set-key-set mono">configured</span>
+    {% else %}
+      <span class="set-key-unset mono">not configured</span>
+    {% endif %}
+  </p>
+
+  <div class="field">
+    <label for="ai_provider_choice">Provider</label>
+    <select class="mono" id="ai_provider_choice" name="ai_provider_choice">
+      <option value="anthropic" {{ 'selected' if ai_provider_choice == 'anthropic' else '' }}>Anthropic (default)</option>
+      <option value="openai" {{ 'selected' if ai_provider_choice == 'openai' else '' }}>OpenAI-compatible endpoint</option>
+      <option value="claude_cli" {{ 'selected' if ai_provider_choice == 'claude_cli' else '' }}>Claude CLI (local)</option>
+    </select>
+  </div>
+
+  <p class="set-sub">The <b>Claude CLI (local)</b> option runs the local
+    <span class="mono">claude</span> CLI in print mode (<span class="mono">claude -p</span>),
+    piping the prompt on <b>stdin</b> — so a large audit never hits the argv size
+    limit (<span class="mono">E2BIG</span>) that breaks an OpenAI-compatible proxy
+    bridge. It uses your own local Claude auth and needs <b>no API key</b>. Leave
+    the model blank to use the CLI's default model.</p>
+
+  <div class="field">
+    <label for="claude_cli_model">Claude CLI model <span class="set-note">(optional)</span></label>
+    <input class="mono" type="text" id="claude_cli_model" name="claude_cli_model"
+      autocomplete="off" value="{{ claude_cli_model }}" placeholder="blank = CLI default model">
+  </div>
+  <div class="field">
+    <label for="claude_cli_binary">Claude CLI binary path <span class="set-note">(advanced)</span></label>
+    <input class="mono" type="text" id="claude_cli_binary" name="claude_cli_binary"
+      autocomplete="off" value="{{ claude_cli_binary }}" placeholder="claude">
+  </div>
+  <div class="field">
+    <label for="claude_cli_timeout">Claude CLI timeout <span class="set-note">(seconds — raise for large audits)</span></label>
+    <input class="mono" type="number" min="1" id="claude_cli_timeout" name="claude_cli_timeout"
+      autocomplete="off" value="{{ claude_cli_timeout }}" placeholder="600">
+  </div>
+
+  <p class="set-sub">For the OpenAI-compatible option, point the base URL at any
+    endpoint that speaks the OpenAI chat-completions API (entered below; nothing is
+    hardcoded). The key is stored encrypted on this machine and never leaves it.</p>
+
+  <div class="field">
+    <label for="openai_base_url">OpenAI-compatible base URL</label>
+    <input class="mono" type="text" id="openai_base_url" name="openai_base_url"
+      autocomplete="off" value="{{ openai_base_url }}" placeholder="https://your-endpoint.example/v1">
+  </div>
+  <div class="field">
+    <label for="openai_model">Model</label>
+    <input class="mono" type="text" id="openai_model" name="openai_model"
+      autocomplete="off" value="{{ openai_model }}" placeholder="e.g. your-model-name">
+  </div>
+  <div class="field">
+    <label for="openai_api_key">API key
+      {% if has_openai_key %}<span class="set-key-set mono">key set</span>{% endif %}
+    </label>
+    <input class="mono" type="password" id="openai_api_key" name="openai_api_key"
+      autocomplete="off" placeholder="{{ 'leave blank to keep current key' if has_openai_key else 'sk-...' }}">
+  </div>
+  <div class="set-foot">
+    <button class="btn" type="submit">Save AI provider</button>
+  </div>
+</form>
+
+{# Keep the /settings POST wired. OAuth client fields are intentionally absent now;
+   the handler reads them defensively, so submitting clears any stale OAuth config. #}
+<form method="post" action="/settings" class="set-reset">
+  <span class="set-reset-lbl">Clear stored OAuth application credentials (if any were set previously).</span>
+  <button class="btn ghost sm" type="submit">Clear &amp; save</button>
+</form>
+
+<style>
+  .set-panel { max-width: 680px; margin-top: 18px; }
+  .set-head { display: flex; gap: 14px; align-items: flex-start; }
+  .set-ico {
+    flex: 0 0 auto;
+    width: 40px; height: 40px;
+    display: grid; place-items: center;
+    border-radius: var(--radius-sm);
+    background: var(--cyan-bg);
+    border: 1px solid var(--cyan-border);
+    color: var(--cyan-vivid);
+  }
+  .set-ttl {
+    margin: 1px 0 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: -.01em;
+  }
+  .set-sub {
+    margin: 7px 0 0;
+    font-size: 13.5px;
+    line-height: 1.55;
+    color: var(--text-secondary);
+  }
+  .set-steps {
+    list-style: none;
+    margin: 22px 0 0;
+    padding: 18px 0 0;
+    border-top: 1px solid var(--border-dim);
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .set-steps li { display: flex; gap: 12px; align-items: flex-start; }
+  .set-step-n {
+    flex: 0 0 auto;
+    width: 24px; height: 24px;
+    display: grid; place-items: center;
+    border-radius: 7px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-mid);
+    color: var(--text-mono);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .set-steps li b { color: var(--text-primary); font-size: 13.5px; }
+  .set-steps li p { margin: 4px 0 0; font-size: 13px; line-height: 1.5; color: var(--text-secondary); }
+  .set-foot {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-top: 24px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border-dim);
+  }
+  .set-note { font-size: 12px; color: var(--text-dim); }
+  .set-reset {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    max-width: 680px;
+    margin-top: 16px;
+  }
+  .set-reset-lbl { font-size: 12px; color: var(--text-dim); }
+  .set-key { margin-top: 18px; }
+  .set-key-set {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--cyan-vivid);
+    background: var(--cyan-bg);
+    border: 1px solid var(--cyan-border);
+    border-radius: 6px;
+    padding: 1px 7px;
+  }
+  .set-key-unset {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-dim);
+    background: var(--bg-input);
+    border: 1px solid var(--border-mid);
+    border-radius: 6px;
+    padding: 1px 7px;
+  }
+  .set-key select.mono {
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    border: 1px solid var(--border-mid);
+    color: var(--text-primary);
+  }
+</style>
+{% endblock %}

@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ env_name }} — Environment Audit Executive Summary</title>
+{% include "_report_css.html" %}
+</head>
+<body>
+
+  {# ─────────────── COVER — the bottom line up front ─────────────── #}
+  <div class="cover">
+    <div class="kicker">Environment Audit · Executive Summary</div>
+    <h1>{{ env_name }}</h1>
+    <div class="meta">{{ product }}{% if generated_at %} · {{ generated_at }}{% endif %}</div>
+
+    <div class="verdict-block">
+      <div class="grade g-{{ grade if grade in ['A','B','C','D','F'] else '' }}">{{ grade }}</div>
+      <div>
+        <div class="vlabel">Verdict</div>
+        <div class="vval v-{{ verdict }}">{{ verdict|replace('_', ' ')|title }}</div>
+      </div>
+      {% if health_score is not none %}
+      <div class="score"><div class="vlabel">Health</div><b>{{ health_score }}</b><span class="muted"> / 100</span></div>
+      {% endif %}
+      {% if ai_grade and ai_grade != grade %}
+      <div class="score"><div class="vlabel">AI's read</div><b>{{ ai_grade }}</b>{% if ai_health_score is not none %}<span class="muted"> · {{ ai_health_score }}/100</span>{% endif %}</div>
+      {% endif %}
+    </div>
+
+    {% if bottom_line %}<div class="bottom-line">{{ bottom_line }}</div>{% endif %}
+
+    <div class="cover-foot">
+      {{ total_findings }} configuration finding(s) · {{ high }} high / {{ medium }} medium / {{ low }} low ·
+      {{ problem_types }} problem type(s) · {{ app_fixable }} app-fixable.
+      Generated locally by Migration Auditor{% if ai.model %} · AI assessment via {{ ai.model }}{% endif %}.
+    </div>
+  </div>
+
+  {# ─────────────── 1. THE STORY ─────────────── #}
+  {% if ai.summary and not ai.skipped %}
+  <section>
+    <h2><span class="n">1</span>The story <span class="ai-tag">AI</span></h2>
+    <p class="lead">{{ ai.summary|truncate(1600, true) }}</p>
+    {% if ai.themes %}
+    <div class="callout">
+      <div class="h">Recurring themes</div>
+      <ul class="clean">{% for t in ai.themes[:5] %}<li>{{ t|truncate(220, true) }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+    {% if ai.top_risks %}
+    <div class="callout">
+      <div class="h">What's most at stake</div>
+      <ul class="clean">{% for r in ai.top_risks[:6] %}<li>{{ r|truncate(240, true) }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+  </section>
+  {% elif headlines %}
+  <section>
+    <h2><span class="n">1</span>Summary</h2>
+    <ul class="clean">{% for h in headlines[:8] %}<li>{{ h }}</li>{% endfor %}</ul>
+  </section>
+  {% endif %}
+
+  {# ─────────────── 2. THE PLAN ─────────────── #}
+  {% if ai.roadmap %}
+  <section>
+    <h2><span class="n">2</span>Where to start — the plan <span class="ai-tag">AI</span></h2>
+    <p class="muted small">Highest-leverage actions first — the order to work the backlog, not just what's wrong.</p>
+    <ol class="roadmap">
+      {% for s in ai.roadmap[:12] %}
+      <li>
+        <span class="step-title">{{ (s.step or s.title or '')|truncate(200, true) }}</span>{% if s.effort in ['S','M','L'] %}<span class="eff">{{ s.effort }}</span>{% endif %}
+        {% if s.rationale %}<div class="why">{{ s.rationale|truncate(300, true) }}</div>{% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+  </section>
+  {% endif %}
+
+  {# ─────────────── 3. THE DATA ─────────────── #}
+  <section>
+    <h2><span class="n">3</span>The data</h2>
+    <div class="kpis">
+      <div class="kpi"><div class="n2">{{ total_findings }}</div><div class="l">Findings</div></div>
+      <div class="kpi"><div class="n2 high">{{ high }}</div><div class="l">High</div></div>
+      <div class="kpi"><div class="n2 med">{{ medium }}</div><div class="l">Medium</div></div>
+      <div class="kpi"><div class="n2">{{ low }}</div><div class="l">Low</div></div>
+      <div class="kpi"><div class="n2">{{ problem_types }}</div><div class="l">Problem types</div></div>
+      <div class="kpi"><div class="n2 app">{{ app_fixable }}</div><div class="l">App-fixable</div></div>
+    </div>
+
+    {% if finding_groups %}
+    <h3 style="font-size:10pt;margin:16px 0 0;color:#3a4350">Findings by problem type</h3>
+    <table>
+      <thead><tr><th scope="col">Problem type</th><th scope="col">Category</th><th scope="col">Severity</th><th scope="col">Resolution</th><th scope="col" style="text-align:right">Count</th></tr></thead>
+      <tbody>
+        {% for g in finding_groups[:24] %}
+        <tr>
+          <td>{{ g.label }}</td>
+          <td class="muted">{{ g.category }}</td>
+          <td><span class="pill p-{{ g.severity }}">{{ g.severity }}</span></td>
+          <td class="{{ 'tier-app' if g.tier == 'app' else 'muted' }}">{{ g.tier_label }}</td>
+          <td class="num">{{ g.count }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if finding_groups|length > 24 %}<p class="small muted">…and {{ finding_groups|length - 24 }} more problem type(s) — see the full in-app analysis.</p>{% endif %}
+    {% endif %}
+  </section>
+
+  {# ─────────────── 4. KEY ISSUES ─────────────── #}
+  {% if ai.ai_findings %}
+  <section>
+    <h2><span class="n">4</span>Key issues, root-caused <span class="ai-tag">AI</span></h2>
+    {% for f in ai.ai_findings[:5] %}
+    <div class="aif">
+      <div class="t">{{ f.title }}{% if f.severity %} <span class="pill p-{{ f.severity }}">{{ f.severity }}</span>{% endif %}{% if f.priority %} <span class="eff">P{{ f.priority }}</span>{% endif %}</div>
+      {% if f.root_cause %}<div class="lab">Root cause</div><div class="v">{{ f.root_cause }}</div>{% endif %}
+      {% if f.risk or f.observation %}<div class="lab">Risk</div><div class="v">{{ f.risk or f.observation }}</div>{% endif %}
+      {% if f.remediation_steps %}<div class="lab">Remediation</div><ol>{% for s in f.remediation_steps %}<li class="v">{{ s }}</li>{% endfor %}</ol>{% endif %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  {# ─────────────── 5. BLIND SPOTS ─────────────── #}
+  {% if ai.gaps %}
+  <section>
+    <h2><span class="n">5</span>Blind spots — what this audit can't see <span class="ai-tag">AI</span></h2>
+    <ul class="clean">{% for g in ai.gaps[:8] %}<li>{{ g|truncate(300, true) }}</li>{% endfor %}</ul>
+  </section>
+  {% endif %}
+
+  <div class="foot">
+    Advisory — findings are from an automated configuration audit; the AI assessment is complementary and does not drive the verdict. Verify before acting on live configuration.
+  </div>
+
+</body>
+</html>

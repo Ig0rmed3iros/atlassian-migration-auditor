@@ -1,0 +1,670 @@
+{% extends "base.html" %}
+
+{#
+  Stateful "Instrument" wizard for one migration (Dark Console).
+  State is derived purely from `conns` (source / target connection rows):
+    - a role is DONE when conns[role] exists AND its status == 'verified'
+    - active step = first incomplete: Source, then Target, then Projects
+  Name is always done (the migration row exists). When BOTH roles are
+  verified we drop the connection step and show the detail view: a compact
+  connections summary, the live project picker, and run history.
+
+  Auth is PAT-only: each side is connected by posting a site URL, email,
+  and API token to /migrations/{id}/connections. The OAuth backend routes
+  stay dormant; no OAuth UI is rendered.
+#}
+
+{% set src = conns.source %}
+{% set tgt = conns.target %}
+{# product vocabulary: containers are projects (jira) or spaces (confluence) #}
+{% set noun = "spaces" if mig.product == "confluence" else "projects" %}
+{% set noun_title = "Spaces" if mig.product == "confluence" else "Projects" %}
+
+{# ---- shared PAT connection fields (all three connect/reconnect forms) ----
+   Deployment drives auth shape: Cloud is Basic email:token, DC is
+   PAT-as-Bearer with no email — the toggle script below hides the email
+   field (and drops required) when dc is selected. #}
+{% macro pat_fields() -%}
+<div class="field"><label>Deployment</label>
+  <select name="deployment">
+    <option value="cloud" selected>Cloud</option>
+    <option value="dc">Data Center</option>
+  </select></div>
+<div class="field"><label>Site URL</label>
+  <input class="mono" name="site_url" placeholder="https://your-site.atlassian.net" required></div>
+<div class="field" data-email-field><label>Email</label>
+  <input name="email" type="email" placeholder="you@example.com" required>
+  <div class="hint">Cloud authenticates as email + API token; Data Center uses the token alone.</div></div>
+<div class="field"><label>API token</label>
+  <input class="mono" name="api_token" type="password" placeholder="ATATT••••your-api-token••••" required></div>
+<div class="hint">Cloud: id.atlassian.com → Security → API tokens · Data Center: profile → Personal Access Tokens</div>
+{%- endmacro %}
+
+{# ---- "use a saved connection" picker (Connection Vault) ----
+   Lists vault entries whose product matches this audit; selecting one and
+   submitting POSTs to /connections/from-saved, which re-verifies the saved
+   secret LIVE before copying it into this role's connection. Hidden entirely
+   when the vault has nothing for this product. #}
+{% macro saved_picker(role) -%}
+{% if saved_connections %}
+<div class="card pad saved-pick" style="margin-bottom:14px">
+  <div style="font-size:13px;font-weight:600;color:var(--text-primary);margin-bottom:8px">Use a saved connection</div>
+  <form method="post" action="/migrations/{{ mig.id }}/connections/from-saved"
+        style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+    <input type="hidden" name="role" value="{{ role }}">
+    <div class="field" style="flex:1 1 280px;margin:0">
+      <label>Saved {{ mig.product }} connections</label>
+      <select name="saved_id" required>
+        {% for s in saved_connections %}
+        <option value="{{ s.id }}">{{ s.name }} · {{ (s.site_url or "").replace("https://","").rstrip("/") }} ({{ s.deployment }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button class="btn sm" type="submit">Use &amp; verify</button>
+  </form>
+  <div class="hint" style="margin-top:8px">Manage saved connections in <a href="/connections" class="text-cyan">Connections →</a></div>
+</div>
+{% endif %}
+{%- endmacro %}
+
+{# ---- danger: delete a single run ----
+   POST-only (a GET would let a crawl delete it); confirm() guards the click.
+   Styled as a subtle danger ghost so it never competes with "Open run". #}
+{% macro delete_run_btn(r) -%}
+<form method="post" action="/runs/{{ r.id }}/delete" style="margin:0"
+      onsubmit="return confirm('Delete this run and its findings? This cannot be undone.')">
+  <button class="btn ghost sm danger" type="submit" title="Delete run #{{ r.id }}">Delete</button>
+</form>
+{%- endmacro %}
+{% set is_env = mig.audit_type == 'environment' %}
+{% set src_done = src and src.status == 'verified' %}
+{% set tgt_done = tgt and tgt.status == 'verified' %}
+{% if not src_done %}
+  {% set cur_role = 'source' %}
+{% elif not tgt_done %}
+  {% set cur_role = 'target' %}
+{% else %}
+  {% set cur_role = none %}
+{% endif %}
+{# active step index across [Name, Source, Target, Projects, Review] #}
+{% if not src_done %}{% set active_step = 1 %}
+{% elif not tgt_done %}{% set active_step = 2 %}
+{% else %}{% set active_step = 3 %}{% endif %}
+
+{% block topbar %}
+<div class="topbar">
+  <div class="crumb">
+    {% if is_env %}
+    <a href="/environments">Environment audits</a>
+    {% else %}
+    <a href="/">Migration audits</a>
+    {% endif %}
+    <span class="sep">/</span>
+    <b>{{ mig.name }}</b>
+  </div>
+  <div class="spacer"></div>
+  {% if cur_role is none and active %}
+  <a class="pill v-run" href="/runs/{{ active.id }}" style="text-decoration:none"><span class="dot"></span>RUN #{{ active.id }} RUNNING</a>
+  {% endif %}
+  {# Delete audit lives in the topbar so it is reachable in every wizard state
+     (the run-history / detail view only renders once both sides are verified). #}
+  <form method="post" action="/migrations/{{ mig.id }}/delete" style="margin:0"
+        onsubmit="return confirm('Delete this entire audit, all its runs, connections, and findings? This cannot be undone.')">
+    <button class="btn ghost sm danger" type="submit">Delete audit</button>
+  </form>
+</div>
+{% endblock %}
+
+{% block content %}
+{% if error %}
+<div class="banner err">
+  <svg width="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4m0 4h.01"/></svg>
+  <span>{{ error }}</span>
+</div>
+{% endif %}
+
+{% if is_env %}
+{# ===================== ENVIRONMENT AUDIT FLOW =====================
+   Single-connection wizard: source only.
+   Stepper: Name → Connect → Gather → Checks → Analysis → Report
+#}
+<h1 class="h1">{{ mig.name }}</h1>
+<p class="sub">Environment audit — inspect a single Atlassian instance for health, configuration, and hygiene issues.</p>
+
+{# ---- Audit workflow strip ---- #}
+<div class="env-workflow-bar">
+  <span class="env-wf-label">Audit workflow</span>
+  <ol class="workflow-strip">
+    <li>Connect</li><li>Gather config</li><li>Health checks</li><li>AI analysis</li><li>Report</li>
+  </ol>
+</div>
+
+{# ---- Environment connection panel ---- #}
+<div class="section-h" style="margin-top:24px">Source instance</div>
+{% if src_done %}
+<div class="card pad" style="margin-top:12px">
+  <div class="between">
+    <div>
+      <div style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-dim);font-weight:700;font-family:var(--font-mono)">environment</div>
+      <div class="mono" style="margin-top:5px;font-size:13px;color:var(--text-mono)">{{ (src.site_url or "").replace("https://","").rstrip("/") }}</div>
+    </div>
+    <span class="verified">
+      <svg width="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>
+      verified
+    </span>
+  </div>
+  <div class="muted" style="font-size:12px;margin-top:8px;font-family:var(--font-mono)">{{ src.auth_type|upper }}{% if src.account_email %} · {{ src.account_email }}{% endif %}
+    <button class="btn ghost sm" type="button" data-reconnect style="margin-left:8px;padding:3px 9px;font-size:11.5px">reconnect</button>
+  </div>
+  <div class="reconnect-form" hidden style="margin-top:14px;border-top:1px solid var(--border-dim);padding-top:14px">
+    <form method="post" action="/migrations/{{ mig.id }}/connections">
+      <input type="hidden" name="role" value="source">
+      {{ pat_fields() }}
+      <div style="margin-top:12px">
+        <button class="btn sm" type="submit">Verify &amp; replace</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% else %}
+{{ saved_picker('source') }}
+<div class="card pad pat-card" style="margin-top:12px">
+  <div class="row" style="align-items:flex-start;gap:14px">
+    <div class="ico" style="width:38px;height:38px;border-radius:9px;display:grid;place-items:center;background:var(--bg-elevated);border:1px solid var(--border-dim);flex:0 0 auto">
+      <svg width="20" viewBox="0 0 24 24" fill="none" stroke="var(--cyan-vivid)" stroke-width="2"><path d="M21 2l-2 2m-7.6 7.6a5 5 0 1 1-7 7 5 5 0 0 1 7-7zm0 0L15 8m0 0l3 3 3-3-3-3"/></svg>
+    </div>
+    <div>
+      <h4 style="margin:0 0 3px;font-size:15px;font-weight:600;color:var(--text-primary)">API token (PAT)</h4>
+      <p style="margin:0;color:var(--text-secondary);font-size:12.5px;line-height:1.45">Paste the source site URL, your email, and an Atlassian API token. Stored encrypted on this machine.</p>
+    </div>
+  </div>
+  <form method="post" action="/migrations/{{ mig.id }}/connections" style="margin-top:6px;max-width:520px">
+    <input type="hidden" name="role" value="source">
+    {{ pat_fields() }}
+    <div style="margin-top:14px">
+      <button class="btn" type="submit">Verify &amp; continue
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+{# ---- Run environment audit button ---- #}
+{% if src_done %}
+<div class="wiz-foot" style="margin-top:24px">
+  {% if active %}
+  <span class="muted">A run is in progress — <a href="/runs/{{ active.id }}">open run #{{ active.id }} →</a></span>
+  {% else %}
+  <form method="post" action="/migrations/{{ mig.id }}/env-runs">
+    <button class="btn" type="submit">Run environment audit
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+    </button>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
+
+{# ---- run history ---- #}
+<div class="section-h" style="margin-top:30px">Run history</div>
+{% if runs %}
+<div class="mig-list" style="margin-top:0">
+  {% for r in runs %}
+  {% if r.status == "running" %}
+    {% set pill_cls = "v-run" %}{% set pill_lbl = "RUNNING" %}
+  {% elif r.verdict == "CLEAN" %}
+    {% set pill_cls = "v-clean" %}{% set pill_lbl = "CLEAN" %}
+  {% elif r.verdict == "CRITICAL" %}
+    {% set pill_cls = "v-crit" %}{% set pill_lbl = "CRITICAL" %}
+  {% else %}
+    {% set pill_cls = "v-tails" %}{% set pill_lbl = r.status|upper %}
+  {% endif %}
+  <div class="card mig" style="grid-template-columns:1fr auto auto auto">
+    <div>
+      <div class="nm">Run #{{ r.id }}</div>
+      <div class="meta"><span>phase <span class="mono">{{ r.phase }}</span></span><span>status <span class="mono">{{ r.status }}</span></span></div>
+    </div>
+    <span class="pill {{ pill_cls }}"><span class="dot"></span>{{ pill_lbl }}</span>
+    <a class="btn ghost sm" href="/runs/{{ r.id }}">Open run →</a>
+    {{ delete_run_btn(r) }}
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card pad"><span class="muted">No runs yet. Connect the instance above and start your first environment audit.</span></div>
+{% endif %}
+
+{% else %}
+{# ===================== MIGRATION AUDIT FLOW (original) ===================== #}
+
+{# ---------------- stepper (5 dots) ---------------- #}
+{% macro stepdot(idx, label, done, active) -%}
+<div class="step {{ 'done' if done else '' }} {{ 'active' if active else '' }}">
+  <span class="num">{% if done %}<svg width="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>{% else %}{{ idx }}{% endif %}</span>
+  <span class="nm">{{ label }}</span>
+  {% if idx < 5 %}<span class="bar"></span>{% endif %}
+</div>
+{%- endmacro %}
+
+<div class="stepper">
+  {{ stepdot(1, "Name",     True,                active_step == 0) }}
+  {{ stepdot(2, "Source",   src_done,            active_step == 1) }}
+  {{ stepdot(3, "Target",   tgt_done,            active_step == 2) }}
+  {{ stepdot(4, noun_title, false,               active_step == 3) }}
+  {{ stepdot(5, "Review",   false,               false) }}
+</div>
+
+{% if cur_role is not none %}
+{# ================= CONNECTION STEP (source or target) ================= #}
+{% set role = cur_role %}
+{% set this_conn = conns[role] %}
+<h1 class="h1">Connect the {{ role }} instance</h1>
+<p class="sub">Where the data is migrating <i>{{ "from" if role == "source" else "to" }}</i>. Authenticate with an Atlassian API token — read-only, stored encrypted on this machine.</p>
+
+{# progress: if the OTHER role is already verified, show a compact confirmation #}
+{% set other = "target" if role == "source" else "source" %}
+{% if conns[other] and conns[other].status == 'verified' %}
+<div style="margin-top:14px">
+  <span class="verified">
+    <svg width="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>
+    {{ other|capitalize }} verified · <span class="mono">{{ (conns[other].site_url or "").replace("https://","").rstrip("/") }}</span>
+  </span>
+</div>
+{% endif %}
+
+{% if this_conn and this_conn.status == 'verified' %}
+{# the current role is already verified — show a confirmation with inline reconnect #}
+<div class="card pad" style="margin-top:16px">
+  <div class="between">
+    <span class="verified">
+      <svg width="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>
+      {{ role|capitalize }} verified · <span class="mono">{{ (this_conn.site_url or "").replace("https://","").rstrip("/") }}</span>
+    </span>
+    <button class="btn ghost sm" type="button" data-reconnect>Reconnect</button>
+  </div>
+  <div class="reconnect-form" hidden style="margin-top:16px;border-top:1px solid var(--border-dim);padding-top:16px">
+    <form method="post" action="/migrations/{{ mig.id }}/connections">
+      <input type="hidden" name="role" value="{{ role }}">
+      {{ pat_fields() }}
+      <div style="margin-top:14px">
+        <button class="btn" type="submit">Verify &amp; continue
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+{% else %}
+
+{{ saved_picker(role) }}
+{# ---- PAT connect card (single auth method) ---- #}
+<div class="card pad pat-card" style="margin-top:16px">
+  <div class="row" style="align-items:flex-start;gap:14px">
+    <div class="ico" style="width:38px;height:38px;border-radius:9px;display:grid;place-items:center;background:var(--bg-elevated);border:1px solid var(--border-dim);flex:0 0 auto">
+      <svg width="20" viewBox="0 0 24 24" fill="none" stroke="var(--cyan-vivid)" stroke-width="2"><path d="M21 2l-2 2m-7.6 7.6a5 5 0 1 1-7 7 5 5 0 0 1 7-7zm0 0L15 8m0 0l3 3 3-3-3-3"/></svg>
+    </div>
+    <div>
+      <h4 style="margin:0 0 3px;font-size:15px;font-weight:600;color:var(--text-primary)">API token (PAT)</h4>
+      <p style="margin:0;color:var(--text-secondary);font-size:12.5px;line-height:1.45">Paste the {{ role }} site URL, your email, and an Atlassian API token. Works immediately — no setup. Stored encrypted on this machine.</p>
+    </div>
+  </div>
+  <form method="post" action="/migrations/{{ mig.id }}/connections" style="margin-top:6px;max-width:520px">
+    <input type="hidden" name="role" value="{{ role }}">
+    {{ pat_fields() }}
+    <div style="margin-top:14px">
+      <button class="btn" type="submit">Verify &amp; continue
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+{% else %}
+{# ================= DETAIL VIEW — both connections verified ================= #}
+<h1 class="h1">{{ mig.name }}</h1>
+<p class="sub">Both instances are connected. Pick the {{ noun }} to audit, then start a run.</p>
+
+{# ---- compact connections summary ---- #}
+<div class="conn-grid" style="margin-top:16px">
+  {% for role in ["source", "target"] %}
+  {% set c = conns[role] %}
+  <div class="card pad">
+    <div class="between">
+      <div>
+        <div style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-dim);font-weight:700;font-family:var(--font-mono)">{{ role }}</div>
+        <div class="mono" style="margin-top:5px;font-size:13px;color:var(--text-mono)">{{ (c.site_url or "").replace("https://","").rstrip("/") }}</div>
+      </div>
+      <span class="verified">
+        <svg width="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>
+        verified
+      </span>
+    </div>
+    <div class="muted" style="font-size:12px;margin-top:8px;font-family:var(--font-mono)">{{ c.auth_type|upper }}{% if c.account_email %} · {{ c.account_email }}{% endif %}
+      <button class="btn ghost sm" type="button" data-reconnect style="margin-left:8px;padding:3px 9px;font-size:11.5px">reconnect</button>
+    </div>
+    <div class="reconnect-form" hidden style="margin-top:14px;border-top:1px solid var(--border-dim);padding-top:14px">
+      <form method="post" action="/migrations/{{ mig.id }}/connections">
+        <input type="hidden" name="role" value="{{ role }}">
+        {{ pat_fields() }}
+        <div style="margin-top:12px">
+          <button class="btn sm" type="submit">Verify &amp; replace</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{# ---- project picker (populated by JS from /scope.json) ---- #}
+<div class="section-h" style="margin-top:30px">Select {{ noun }} to audit</div>
+<p class="sub" id="pick-sub">Counts are live from each instance.</p>
+
+<div class="pick-tools">
+  <div class="search">
+    <svg width="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+    <input id="pick-filter" placeholder="Filter {{ noun }}…">
+  </div>
+  <button class="btn ghost sm" type="button" id="pick-all">Select all matched</button>
+</div>
+
+<div id="picker">
+  <div class="card pad" id="pick-loading">
+    <div class="row"><span class="ph-spin"></span><span class="muted">Scanning both instances…</span></div>
+  </div>
+</div>
+
+{% if active %}
+<div class="wiz-foot">
+  <span class="muted">A run is in progress — <a href="/runs/{{ active.id }}">open run #{{ active.id }} →</a></span>
+</div>
+{% else %}
+<form method="post" action="/migrations/{{ mig.id }}/runs" id="run-form" class="wiz-foot" style="display:none">
+  <input type="hidden" name="projects" id="run-projects" value="">
+  <span class="muted" style="align-self:center" id="run-note"></span>
+  <button class="btn" type="submit" id="run-start">Start audit · <span id="run-count">0</span> {{ noun }}
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+  </button>
+</form>
+{% endif %}
+
+{# ---- runs history ---- #}
+<div class="section-h" style="margin-top:30px">Run history</div>
+{% if runs %}
+<div class="mig-list" style="margin-top:0">
+  {% for r in runs %}
+  {% if r.status == "running" %}
+    {% set pill_cls = "v-run" %}{% set pill_lbl = "RUNNING" %}
+  {% elif r.verdict == "CLEAN" %}
+    {% set pill_cls = "v-clean" %}{% set pill_lbl = "CLEAN" %}
+  {% elif r.verdict == "CLEAN_WITH_TAILS" %}
+    {% set pill_cls = "v-tails" %}{% set pill_lbl = "CLEAN · TAILS" %}
+  {% elif r.verdict == "GAPS_FOUND" %}
+    {% set pill_cls = "v-gaps" %}{% set pill_lbl = "GAPS FOUND" %}
+  {% elif r.verdict == "CRITICAL" %}
+    {% set pill_cls = "v-crit" %}{% set pill_lbl = "CRITICAL" %}
+  {% else %}
+    {% set pill_cls = "v-tails" %}{% set pill_lbl = r.status|upper %}
+  {% endif %}
+  <div class="card mig" style="grid-template-columns:1fr auto auto auto">
+    <div>
+      <div class="nm">Run #{{ r.id }}</div>
+      <div class="meta"><span>phase <span class="mono">{{ r.phase }}</span></span><span>status <span class="mono">{{ r.status }}</span></span></div>
+    </div>
+    <span class="pill {{ pill_cls }}"><span class="dot"></span>{{ pill_lbl }}</span>
+    {% if r.status == "done" %}
+      <a class="btn ghost sm" href="/runs/{{ r.id }}/analysis">Open analysis →</a>
+    {% else %}
+      <a class="btn ghost sm" href="/runs/{{ r.id }}">Open run →</a>
+    {% endif %}
+    {{ delete_run_btn(r) }}
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card pad"><span class="muted">No runs yet. Pick projects above and start your first audit.</span></div>
+{% endif %}
+
+{% endif %}{# end state branch #}
+
+{% endif %}{# end env/migration branch #}
+{% endblock %}
+
+{% block scripts %}
+<style>
+/* ---- environment audit workflow bar ---- */
+.env-workflow-bar {
+  display: flex; align-items: center; gap: 12px;
+  margin-top: 16px; flex-wrap: wrap;
+}
+.env-wf-label {
+  font-size: 10px; font-weight: 700;
+  letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text-dim); font-family: var(--font-mono);
+  white-space: nowrap;
+}
+.workflow-strip {
+  display: flex; gap: 0; list-style: none; margin: 0; padding: 0; flex-wrap: wrap;
+}
+.workflow-strip li {
+  font-size: 11px; font-family: var(--font-mono);
+  color: var(--text-secondary);
+  padding: 3px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-dim);
+  border-right: none;
+  white-space: nowrap;
+}
+.workflow-strip li:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+.workflow-strip li:last-child  { border-right: 1px solid var(--border-dim); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+
+/* ---- danger ghost button + delete-audit zone (app.css is frozen) ---- */
+.btn.ghost.danger {
+  color: var(--red-deep);
+  border-color: var(--red-edge);
+}
+.btn.ghost.danger:hover {
+  color: #fff;
+  background: var(--red-deep);
+  border-color: var(--red-deep);
+  box-shadow: 0 4px 12px rgba(255,59,48,0.28);
+}
+
+/* dim non-matching picker rows (toggled by the picker JS) */
+.pick .prow.dim { opacity:.4; }
+.cbx { cursor:pointer; }
+/* deployment <select> — mirror the .field input chrome (app.css is frozen) */
+.field select {
+  width: 100%;
+  padding: 9px 11px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-mid);
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 13.5px;
+  color: var(--text-primary);
+}
+.field select:focus {
+  outline: none;
+  border-color: var(--cyan-border);
+  box-shadow: 0 0 0 3px rgba(34,211,238,0.12);
+}
+</style>
+
+{# ---- deployment toggle: DC is token-only (no email) + DC-ish placeholder ---- #}
+<script>
+(function () {
+  var DC_SITE = {{ ("https://confluence.acme.example" if mig.product == "confluence"
+                    else "https://jira.acme.example") | tojson }};
+  document.querySelectorAll('select[name=deployment]').forEach(function (sel) {
+    var form = sel.closest('form');
+    if (!form) return;
+    var emailField = form.querySelector('[data-email-field]');
+    var emailInput = emailField && emailField.querySelector('input[name=email]');
+    var siteInput = form.querySelector('input[name=site_url]');
+    function apply() {
+      var dc = sel.value === 'dc';
+      if (emailField) emailField.hidden = dc;
+      if (emailInput) emailInput.required = !dc;
+      if (siteInput) siteInput.placeholder = dc ? DC_SITE : 'https://your-site.atlassian.net';
+    }
+    sel.addEventListener('change', apply);
+    apply();
+  });
+})();
+</script>
+
+{# ---- reconnect toggles (PAT-only): reveal the inline PAT form ---- #}
+<script>
+(function () {
+  document.querySelectorAll('[data-reconnect]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var card = btn.closest('.card') || document;
+      var form = card.querySelector('.reconnect-form');
+      if (!form) return;
+      var open = !form.hasAttribute('hidden');
+      if (open) { form.setAttribute('hidden', ''); }
+      else {
+        form.removeAttribute('hidden');
+        var first = form.querySelector('input:not([type=hidden])');
+        if (first) first.focus();
+      }
+    });
+  });
+})();
+</script>
+
+{% if cur_role is none and not active %}
+<script>
+(function () {
+  const MIG = {{ mig.id }};
+  const picker  = document.getElementById("picker");
+  const loading = document.getElementById("pick-loading");
+  const sub     = document.getElementById("pick-sub");
+  const form    = document.getElementById("run-form");
+  const hidden  = document.getElementById("run-projects");
+  const countEl = document.getElementById("run-count");
+  const noteEl  = document.getElementById("run-note");
+  const startBt = document.getElementById("run-start");
+  const filter  = document.getElementById("pick-filter");
+  const allBtn  = document.getElementById("pick-all");
+
+  let rows = [];   // [{key,name,src_count,tgt_count}]
+  const sel = new Set();
+
+  // product vocabulary: plural / singular / header forms of the container noun
+  const NOUN  = {{ noun | tojson }};
+  const NOUN1 = NOUN.slice(0, -1);
+  const NOUNH = NOUN1.charAt(0).toUpperCase() + NOUN1.slice(1);
+
+  const fmt = (n) => (n === null || n === undefined) ? "—" : Number(n).toLocaleString();
+  const CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>';
+
+  function refreshCount() {
+    countEl.textContent = sel.size;
+    startBt.disabled = sel.size === 0;
+    startBt.style.opacity = sel.size === 0 ? ".5" : "1";
+  }
+
+  function render() {
+    if (!rows.length) {
+      picker.innerHTML =
+        '<div class="card pad"><span class="muted">No ' + NOUN + ' exist on both sides — nothing to audit.</span></div>';
+      return;
+    }
+    let html = '<div class="pick"><div class="prow head">' +
+      '<span></span><span>' + NOUNH + '</span><span>Source</span><span>Target</span><span>Status</span></div>';
+    rows.forEach(function (p) {
+      const on = sel.has(p.key);
+      html += '<div class="prow" data-key="' + p.key + '" tabindex="0" role="checkbox" aria-checked="' + on + '">' +
+        '<span class="cbx ' + (on ? 'on' : '') + '">' + (on ? CHECK : '') + '</span>' +
+        '<span><span class="pk-name"></span><span class="pk-key mono"></span></span>' +
+        '<span class="count">' + fmt(p.src_count) + '</span>' +
+        '<span class="count">' + fmt(p.tgt_count) + '</span>' +
+        '<span class="match">matched</span></div>';
+    });
+    html += '</div>';
+    picker.innerHTML = html;
+    // fill names safely (avoid HTML injection from project names)
+    picker.querySelectorAll('.prow[data-key]').forEach(function (el) {
+      const p = rows.find(r => r.key === el.dataset.key);
+      el.querySelector('.pk-name').textContent = p.name || p.key;
+      el.querySelector('.pk-key').textContent = p.key;
+      el.addEventListener('click', () => toggle(p.key));
+      el.addEventListener('keydown', (e) => {
+        if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggle(p.key); }
+      });
+    });
+    applyFilter();
+  }
+
+  function toggle(key) {
+    if (sel.has(key)) sel.delete(key); else sel.add(key);
+    const el = picker.querySelector('.prow[data-key="' + key + '"]');
+    if (el) {
+      const on = sel.has(key);
+      const box = el.querySelector('.cbx');
+      box.classList.toggle('on', on);
+      box.innerHTML = on ? CHECK : '';
+      el.setAttribute('aria-checked', on);
+    }
+    refreshCount();
+  }
+
+  function applyFilter() {
+    const q = (filter.value || "").trim().toLowerCase();
+    picker.querySelectorAll('.prow[data-key]').forEach(function (el) {
+      const p = rows.find(r => r.key === el.dataset.key);
+      const hit = !q || (p.key + " " + (p.name || "")).toLowerCase().includes(q);
+      el.classList.toggle('dim', !hit);
+      el.style.display = hit ? "" : "none";
+    });
+  }
+
+  filter && filter.addEventListener('input', applyFilter);
+  allBtn && allBtn.addEventListener('click', function () {
+    rows.forEach(p => sel.add(p.key));
+    render(); refreshCount();
+  });
+
+  if (form) {
+    form.addEventListener('submit', function () {
+      hidden.value = Array.from(sel).join(",");
+    });
+  }
+
+  fetch('/migrations/' + MIG + '/scope.json')
+    .then(r => r.json().then(j => ({ ok: r.ok, j: j })))
+    .then(function (res) {
+      if (!res.ok || res.j.error) {
+        picker.innerHTML = '<div class="card pad"><span style="color:var(--crit)">' +
+          (res.j.error ? String(res.j.error) : 'Could not scan instances.') + '</span></div>';
+        return;
+      }
+      rows = res.j.matched || [];
+      rows.forEach(p => sel.add(p.key));   // default: all matched selected
+      const so = (res.j.source_only || []).length;
+      const to = (res.j.target_only || []).length;
+      sub.innerHTML = '<b style="color:var(--ink)">' + rows.length + '</b> ' +
+        (rows.length === 1 ? NOUN1 : NOUN) + ' exist on both sides and are selected. Counts are live from each instance.';
+      render();
+      if (form) form.style.display = "";
+      refreshCount();
+      // append the source-only / target-only footnote
+      const note = document.createElement('div');
+      note.className = "card";
+      note.style = "margin-top:12px;border-style:dashed";
+      note.innerHTML = '<div class="onlybar" style="border:0">' +
+        '<span><b>' + so + '</b> source-only ' + (so === 1 ? NOUN1 : NOUN) +
+        " (won't audit — no target match)</span>" +
+        '<span><b>' + to + '</b> target-only ' + (to === 1 ? NOUN1 : NOUN) + '</span></div>';
+      picker.appendChild(note);
+    })
+    .catch(function () {
+      picker.innerHTML =
+        '<div class="card pad"><span style="color:var(--crit)">Could not reach the server to scan instances.</span></div>';
+    });
+})();
+</script>
+{% endif %}
+{% endblock %}

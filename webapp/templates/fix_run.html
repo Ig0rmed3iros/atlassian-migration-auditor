@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+
+{% block topbar %}
+<div class="topbar">
+  <div class="crumb">
+    <a href="/">Migrations</a>
+    <span class="sep">/</span>
+    <span>{{ mig.name }}</span>
+    <span class="sep">/</span>
+    <b>Fix run #{{ run.id }}</b>
+  </div>
+  <div class="spacer"></div>
+  {% if run.status == 'running' %}
+    <span class="pill v-run"><span class="dot"></span>{{ run.phase.upper() if run.phase else 'RUNNING' }}</span>
+  {% elif run.status == 'done' %}
+    <span class="pill v-clean"><span class="dot"></span>{{ run.verdict or 'DONE' }}</span>
+  {% elif run.status == 'failed' %}
+    <span class="pill v-crit"><span class="dot"></span>FAILED</span>
+  {% else %}
+    <span class="pill v-tails"><span class="dot"></span>{{ run.status.upper() }}</span>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block content %}
+<h1 class="h1" style="margin-top:0">Fix run #{{ run.id }} · {{ mig.name }}</h1>
+
+{% if stats %}
+<div class="card pad" style="margin-top:18px">
+  <b>Closure summary:</b>
+  closed {{ stats.closed }}, still open {{ stats.still_open }}, unchanged {{ stats.unchanged }}
+</div>
+{% endif %}
+
+{# Why a run failed / what was skipped — e.g. the destructive-ops cap aborting
+   the whole batch before any action. Without this, a failed run is a dead end. #}
+{% if notes %}
+<div class="card pad" style="margin-top:18px;border-left:3px solid var(--red)">
+  <b>{% if run.status == 'failed' %}Run failed{% else %}Notes{% endif %}</b>
+  <ul style="margin:8px 0 0;padding-left:18px">
+    {% for e in notes %}
+    <li class="sub" style="color:{{ 'var(--red)' if e.level == 'error' else 'var(--amber)' }}">{{ e.message }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if actions %}
+<div class="card pad" style="margin-top:18px">
+  <table>
+    <thead>
+      <tr><th scope="col">Fix</th><th scope="col">Method</th><th scope="col">Path</th><th scope="col">Object</th><th scope="col">Status</th><th scope="col">Result</th></tr>
+    </thead>
+    <tbody>
+      {% for a in actions %}
+      <tr>
+        <td><code class="mono">{{ a.fix_id }}</code></td>
+        <td>{{ a.method or '' }}</td>
+        <td><code class="mono">{{ a.path or '' }}</code></td>
+        <td>{{ a.object_name }}</td>
+        <td>{{ a.status }}</td>
+        <td>{% if a.ok %}{{ a.created_id or 'ok' }}{% else %}{{ a.error or 'failed' }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="sub">No actions recorded yet.</p>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  /* I11: live updates via SSE — mirrors run.html behaviour.
+     When the run is still running, connect to the shared stream endpoint
+     (kind-agnostic) and reload once the 'done' event fires. */
+  var RUN_STATUS = {{ run.status | tojson }};
+  var RUN_ID     = {{ run.id }};
+
+  if (RUN_STATUS === 'running') {
+    var es = new EventSource('/runs/' + RUN_ID + '/stream');
+    es.addEventListener('done', function () {
+      es.close();
+      location.reload();
+    });
+    es.onerror = function () { es.close(); };
+  }
+})();
+</script>
+{% endblock %}

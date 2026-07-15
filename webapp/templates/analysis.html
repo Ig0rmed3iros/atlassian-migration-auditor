@@ -1,0 +1,259 @@
+{% extends "base.html" %}
+
+{% block topbar %}
+<div class="topbar">
+  <div class="crumb">
+    {% if audit_type == 'environment' %}
+    <a href="/environments">Environment audits</a>
+    {% else %}
+    <a href="/">Migration audits</a>
+    {% endif %}
+    <span class="sep">/</span>
+    <span>{{ mig.name }}</span>
+    <span class="sep">/</span>
+    <b>Run #{{ run.id }} · analysis</b>
+  </div>
+  <div class="spacer"></div>
+  {% if run.status == 'done' and run.kind == 'audit' and run.verdict in ('CRITICAL','GAPS_FOUND') %}<a class="btn fix-btn" href="/runs/{{ run.id }}/fix">Fix options</a>{% endif %}
+  {% if run.status == 'done' and run.kind in ('env_audit', 'audit') %}<a class="btn ghost sm" href="/runs/{{ run.id }}/diff">Compare</a>{% endif %}
+  {% if run.status == 'done' %}<a class="btn ghost sm" href="/runs/{{ run.id }}/findings.csv">CSV</a><a class="btn ghost sm" href="/runs/{{ run.id }}/findings.json">JSON</a>{% endif %}
+  {% if run.status == 'done' and run.kind in ('env_audit', 'audit') %}<a class="btn ghost sm" href="/runs/{{ run.id }}/report.pdf">Export PDF</a>{% endif %}
+  {% if run.status == 'done' and run.kind == 'env_audit' %}<a class="btn fix-btn" href="/runs/{{ run.id }}/env-fix">Fix options</a>{% endif %}
+  <a class="btn ghost sm" href="/migrations/{{ run.migration_id }}">Re-run</a>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="tabs">
+  {% for v, label in [("overview","Overview"),
+                      ("projects","Spaces" if product == "confluence" else "Projects"),
+                      ("config","Macro parity" if product == "confluence" else "Config parity"),
+                      ("issues","All findings"),
+                      ("log","Run log")] %}
+    <a href="/runs/{{ run.id }}/analysis{{ '' if v == 'overview' else '/' + v }}"
+       class="{{ 'on' if view == v or (view == 'project' and v == 'projects') else '' }}">{{ label }}</a>
+  {% endfor %}
+</div>
+
+<div style="margin-top:22px">
+  <div id="app"
+       data-run="{{ run.id }}" data-view="{{ view }}" data-project="{{ project }}"
+       data-product="{{ product }}"
+       data-audit-type="{{ audit_type }}"
+       data-src-base="{{ src_base }}" data-tgt-base="{{ tgt_base }}"
+       data-src-deployment="{{ src_deployment }}" data-tgt-deployment="{{ tgt_deployment }}"></div>
+  <noscript>
+    <div class="card pad" role="alert">
+      <p>This interactive results view requires JavaScript. For a
+      no-JavaScript, screen-reader-friendly summary of this run, open the
+      <a href="/runs/{{ run.id }}/report">executive report</a> or download the
+      <a href="/runs/{{ run.id }}/report.pdf">PDF</a>.</p>
+    </div>
+  </noscript>
+</div>
+
+{# ----------------------------------------------------------------
+   Scoped layout-only styles for the console analysis screen.
+   Colors, glows and the donut/KPI/alert vocabulary all come from
+   app.css (the frozen design system); these rules only arrange the
+   bespoke panel grid, run-meta strip, fidelity bar and issue chips
+   that the mockup composes but app.css does not yet position.
+   ---------------------------------------------------------------- #}
+<style>
+  /* run-meta strip (mockup .run-meta-strip) */
+  #app .run-meta-strip {
+    display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+    padding: 10px 16px;
+    background: var(--bg-root);
+    border: 1px solid var(--border-dim);
+    border-radius: var(--radius-sm);
+    margin-bottom: 20px;
+  }
+  #app .run-meta-item { display: flex; align-items: baseline; gap: 6px; }
+  #app .run-meta-key {
+    font-family: var(--font-mono); font-size: 10px; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: .06em;
+  }
+  #app .run-meta-val {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-mono); font-weight: 500;
+  }
+  #app .run-meta-sep { color: var(--border-bright); font-size: 16px; line-height: 1; }
+
+  /* KPI console layout: let tiles carry the icon + trend row neatly */
+  #app .kpi-console { margin-bottom: 20px; }
+
+  /* analysis panel grid */
+  #app .analysis-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+  }
+  #app .panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border-dim);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  #app .panel-full { grid-column: 1 / -1; }
+  #app .panel-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border-dim);
+  }
+  #app .panel-title {
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .07em;
+    color: var(--text-secondary);
+  }
+  #app .panel-title-dot {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--text-dim); flex: 0 0 auto;
+  }
+  #app .panel-title-dot.danger { background: var(--red-vivid);     box-shadow: 0 0 6px var(--red-vivid); }
+  #app .panel-title-dot.warn   { background: var(--amber-vivid); }
+  #app .panel-title-dot.ok     { background: var(--emerald-vivid); }
+  #app .panel-badge {
+    font-family: var(--font-mono); font-size: 10px;
+    padding: 3px 8px; border-radius: 4px;
+    background: var(--bg-root);
+    border: 1px solid var(--border-dim);
+    color: var(--text-dim);
+  }
+  #app .panel-body { padding: 18px; }
+
+  /* headline findings live inside a panel: drop the card chrome + top gap */
+  #app .finding-stack .finding {
+    margin-top: 0; box-shadow: none;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-dim);
+    border-left: 3px solid var(--border-mid);
+  }
+  #app .finding-stack .finding + .finding { margin-top: 10px; }
+  #app .finding-stack .finding.crit {
+    border-left: 3px solid var(--red-vivid);
+    background: linear-gradient(90deg, rgba(255,59,92,0.06) 0%, var(--bg-elevated) 100%);
+  }
+
+  /* mono issue-key chips (mockup .issue-chip) */
+  #app .chip-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  #app .issue-chip {
+    font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+    padding: 4px 9px; border-radius: 5px;
+    background: var(--red-bg);
+    border: 1px solid var(--red-border);
+    color: var(--red-vivid);
+    box-shadow: 0 0 8px rgba(255,59,92,0.10);
+  }
+
+  /* overall-fidelity bar under the donut */
+  #app .fidelity-block {
+    margin-top: 16px; padding-top: 14px;
+    border-top: 1px solid var(--border-dim);
+  }
+  #app .fidelity-cap {
+    font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: .06em;
+  }
+  #app .fidelity-num { font-family: var(--font-mono); font-size: 20px; font-weight: 700; }
+  #app .fidelity-rail {
+    margin-top: 6px; height: 5px;
+    background: var(--bg-root); border-radius: 3px; overflow: hidden;
+  }
+  #app .fidelity-fill2 {
+    height: 100%; border-radius: 3px;
+    background: linear-gradient(90deg, var(--emerald-vivid), var(--amber-vivid));
+  }
+
+  /* project-health table sits flush inside its full-width panel */
+  #app .panel-full .heat { width: 100%; }
+
+  /* raw-fidelity subtext under the corrected core number */
+  #app .fidelity-rawsub {
+    font-family: var(--font-mono); font-size: 10.5px;
+    color: var(--text-dim); margin-top: 3px;
+  }
+
+  /* ---- SYSTEMATIC GAPS callout (amber/info — NOT red data-loss) ---- */
+  #app .sysgap-body { display: flex; flex-direction: column; gap: 10px; }
+  #app .sysgap-lead {
+    font-size: 12.5px; color: var(--text-secondary); line-height: 1.5;
+    padding-bottom: 4px;
+  }
+  #app .sysgap-row {
+    display: flex; gap: 12px; align-items: flex-start;
+    padding: 12px 14px;
+    background: var(--amber-bg);
+    border: 1px solid var(--amber-border);
+    border-left: 3px solid var(--amber-vivid);
+    border-radius: var(--radius-sm);
+  }
+  #app .sysgap-icon {
+    width: 26px; height: 26px; flex: 0 0 auto;
+    border-radius: 7px;
+    background: rgba(245,166,35,0.12); color: var(--amber-vivid);
+    display: grid; place-items: center;
+  }
+  #app .sysgap-icon svg { width: 14px; height: 14px; }
+  #app .sysgap-text { flex: 1; min-width: 0; }
+  #app .sysgap-headline {
+    font-size: 13px; color: var(--text-primary); line-height: 1.5;
+  }
+  #app .sysgap-headline .mono { color: var(--amber-vivid); }
+  #app .sysgap-cause { color: var(--text-dim); font-size: 12px; }
+  #app .sysgap-top {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-dim); margin-top: 5px;
+  }
+  #app .sysgap-top .mono { color: var(--text-mono); }
+
+  /* ---- clickable project-health rows (drill-down hook) ---- */
+  #app .heat tr.proj-row { cursor: pointer; }
+  #app .heat tr.proj-row:focus-visible {
+    outline: none; box-shadow: inset 0 0 0 1px var(--cyan-border);
+  }
+  #app .heat tr.proj-row:hover td { background: var(--bg-elevated); }
+
+  /* ---- PROJECT DRILL-DOWN view ---- */
+  #app .pj-loading { padding: 40px 4px; }
+  #app .pj-head {
+    display: flex; align-items: center; gap: 16px; margin-bottom: 18px;
+  }
+  #app .pj-title { display: flex; align-items: baseline; gap: 10px; }
+  #app .pj-key {
+    font-size: 20px; font-weight: 700; color: var(--cyan-vivid);
+    letter-spacing: -.01em;
+  }
+  #app .pj-kpis { grid-template-columns: repeat(5, 1fr); margin-bottom: 18px; }
+  #app .pj-kpi .num { font-size: 22px; }
+  #app .pj-kpi .lbl { margin-bottom: 6px; }
+
+  /* systematic badge in the field-mismatch breakdown */
+  #app .sys-badge {
+    font-family: var(--font-mono); font-size: 9.5px; font-weight: 700;
+    letter-spacing: .04em; text-transform: uppercase;
+    padding: 2px 7px; border-radius: 20px; margin-left: 7px;
+    color: var(--amber-vivid);
+    background: var(--amber-bg); border: 1px solid var(--amber-border);
+  }
+
+  /* divergence-by-kind chip strip */
+  #app .kind-split { display: flex; flex-wrap: wrap; gap: 10px; }
+  #app .kind-chip {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 10px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-dim);
+    border-radius: var(--radius-sm);
+  }
+  #app .kind-chip .kind-n { color: var(--text-mono); font-weight: 700; }
+
+  @media (max-width: 980px) {
+    #app .analysis-grid { grid-template-columns: 1fr; }
+    #app .pj-kpis { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+{% endblock %}
+
+{% block scripts %}<script src="/static/solutions.js"></script><script>Analysis.boot();</script>{% endblock %}

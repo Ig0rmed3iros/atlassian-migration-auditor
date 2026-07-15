@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ env_name }} — Migration Audit Executive Summary</title>
+{% include "_report_css.html" %}
+</head>
+<body>
+
+  {# ─────────────── COVER — fidelity up front ─────────────── #}
+  <div class="cover">
+    <div class="kicker">Migration Audit · Executive Summary</div>
+    <h1>{{ env_name }}</h1>
+    <div class="meta">{{ product }} · source → cloud{% if generated_at %} · {{ generated_at }}{% endif %}</div>
+
+    <div class="verdict-block">
+      <div class="grade fid {{ grade_class }}">{% if fidelity is not none %}{{ fidelity }}%{% else %}—{% endif %}</div>
+      <div>
+        <div class="vlabel">Core fidelity</div>
+        <div class="vval v-{{ verdict }}">{{ verdict|replace('_', ' ')|title }}</div>
+      </div>
+      <div class="score"><div class="vlabel">Projects</div><b>{{ projects_count }}</b></div>
+    </div>
+
+    {% if bottom_line %}<div class="bottom-line">{{ bottom_line }}</div>{% endif %}
+
+    <div class="cover-foot">
+      {{ total_findings }} finding(s) · {{ missing_total }} missing on target ·
+      {{ core_mismatched_total }} core mismatch(es) across {{ projects_count }} project(s).
+      Core fidelity removes systematic gaps (cutover tail / config) from the score.
+      Generated locally by Migration Auditor.
+    </div>
+  </div>
+
+  {# ─────────────── 1. FIDELITY ─────────────── #}
+  <section>
+    <h2><span class="n">1</span>Fidelity &amp; coverage</h2>
+    <div class="kpis">
+      <div class="kpi"><div class="n2 {{ 'app' if fidelity is not none and fidelity >= 95 else ('med' if fidelity is not none and fidelity >= 80 else 'high') }}">{% if fidelity is not none %}{{ fidelity }}%{% else %}—{% endif %}</div><div class="l">Core fidelity</div></div>
+      <div class="kpi"><div class="n2">{{ projects_count }}</div><div class="l">Projects</div></div>
+      <div class="kpi"><div class="n2 high">{{ missing_total }}</div><div class="l">Missing on target</div></div>
+      <div class="kpi"><div class="n2 med">{{ core_mismatched_total }}</div><div class="l">Core mismatches</div></div>
+      <div class="kpi"><div class="n2">{{ total_findings }}</div><div class="l">Findings</div></div>
+    </div>
+    {% if headlines %}
+    <div class="callout">
+      <div class="h">Headlines</div>
+      <ul class="clean">{% for h in headlines[:6] %}<li>{{ h|truncate(240, true) }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+    <p class="muted small">
+      Scope: fidelity compares standard fields, description, comments,
+      attachments, and custom-field values per issue (custom fields matched by
+      name and normalized per type). Findings tagged
+      <strong>verify-sensitive</strong> are on field types whose cross-instance
+      identity is inherently uncertain (user / group pickers, cascading selects,
+      app-provided fields, rich text across wiki vs ADF) — verify those before
+      reading them as data loss.
+    </p>
+    {% if uncheckable_total %}
+    <p class="muted small">Coverage: {{ uncheckable_total }} comment/attachment
+    check(s) could not be fully verified (content beyond the inline cap) — the
+    fidelity score reflects checkable content only, so for the affected issues it
+    is an upper bound.</p>
+    {% endif %}
+    {% if cross_dialect %}
+    <div class="callout">
+      <div class="h">Cross-dialect comparison</div>
+      <p class="muted small">This is a Data Center → Cloud comparison, where
+      bodies are stored in different representations (wiki markup vs ADF).
+      Content and comment differences may reflect that representation change
+      rather than data loss — treat such findings as representation-sensitive
+      and verify before reading them as lost content.</p>
+    </div>
+    {% endif %}
+  </section>
+
+  {# ─────────────── 2. PER-PROJECT ─────────────── #}
+  {% if project_rows %}
+  <section>
+    <h2><span class="n">2</span>Per-project fidelity</h2>
+    <table>
+      <thead><tr><th scope="col">Project</th><th scope="col">Status</th><th scope="col" style="text-align:right">Source</th><th scope="col" style="text-align:right">Target</th><th scope="col" style="text-align:right">Missing</th><th scope="col" style="text-align:right">Fidelity</th></tr></thead>
+      <tbody>
+        {% for p in project_rows %}
+        <tr>
+          <td>{{ p.name }}{% if p.key and p.key != p.name %} <span class="muted small">({{ p.key }})</span>{% endif %}</td>
+          <td class="muted">{{ p.status or '' }}</td>
+          <td class="num">{{ p.src if p.src is not none else '—' }}</td>
+          <td class="num">{{ p.tgt if p.tgt is not none else '—' }}</td>
+          <td class="num">{{ p.missing if p.missing is not none else '—' }}</td>
+          <td class="num">
+            {% if p.fidelity is not none %}<span class="pill {{ 'p-good' if p.fidelity >= 95 else ('p-medium' if p.fidelity >= 80 else 'p-high') }}">{{ p.fidelity }}%</span>{% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if project_overflow %}<p class="small muted">…and {{ project_overflow }} more project(s) — see the full in-app analysis.</p>{% endif %}
+  </section>
+  {% endif %}
+
+  {# ─────────────── 3. FINDINGS BY TYPE ─────────────── #}
+  {% if findings_by_kind %}
+  <section>
+    <h2><span class="n">3</span>Findings by type</h2>
+    <table>
+      <thead><tr><th scope="col">Finding type</th><th scope="col" style="text-align:right">Count</th></tr></thead>
+      <tbody>
+        {% for f in findings_by_kind %}
+        <tr><td>{{ f.kind }}</td><td class="num">{{ f.count }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  {# ─────────────── 4. SYSTEMATIC GAPS ─────────────── #}
+  {% if systematic_gaps %}
+  <section>
+    <h2><span class="n">4</span>Systematic gaps (excluded from core fidelity)</h2>
+    <p class="muted small">Whole-category gaps — cutover tail or config not carried — separated from per-item mismatches so the fidelity score reflects genuine data loss.</p>
+    <ul class="clean">{% for g in systematic_gaps %}<li>{{ (g.label if g.label is defined else g)|string|truncate(240, true) }}</li>{% endfor %}</ul>
+  </section>
+  {% endif %}
+
+  <div class="foot">
+    Advisory — fidelity is derived from a source↔target comparison of migrated items; verify before acting. Core fidelity excludes systematic gaps (cutover tail / config) so it reflects per-item data loss.
+  </div>
+
+</body>
+</html>

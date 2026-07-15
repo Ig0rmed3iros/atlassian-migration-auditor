@@ -1,0 +1,456 @@
+{% extends "base.html" %}
+
+{# Phase keys/labels are per run KIND. env_audit runs a single read-only
+   environment (no target), so its visible phases differ from a migration's —
+   gather/checks/analysis are not in the migration PHASE_KEYS, so without this
+   branch they'd map to index -1 and the checklist would render the wrong
+   labels with every row marked done (spec quality fix #4). #}
+{% if run.kind == "env_audit" %}
+{# PHASE_KEYS must include every key that ENV_PHASES / build_env_stages() can
+   set on run.phase, otherwise a mid-scope reload will fall through to cur_idx =
+   PHASE_N (all-done sentinel) and show every row as completed prematurely. #}
+{% set PHASE_KEYS = ["verify","scope","gather","checks","analysis","finalize"] %}
+{% set PHASE_LABELS = ["Connect","Scope","Gather config","Health checks","AI analysis","Report"] %}
+{% set PHASE_DESCS = [
+  "Verify the source connection and confirm API access.",
+  "Determine the scope of configuration areas to audit.",
+  "Read field schemas, workflows, permissions and configuration objects.",
+  "Run automated health checks and score each area.",
+  "Generate AI-powered themes, risk flags and quick-win recommendations.",
+  "Compile verdict, health score, and summary report."
+] %}
+{% else %}
+{% set PHASE_KEYS = ["verify","scope","permissions","extract","compare","config"] %}
+{# phase labels follow the migration's product (config = macro parity for
+   confluence); the keys — and the engine stages behind them — are shared.
+   Value/user-gap capture rides inside compare/config, so it is not a phase. #}
+{% if mig.product == "confluence" %}
+{% set PHASE_LABELS = ["Verify connections","Scope spaces","Permission check","Extract pages","Compare fidelity","Macro parity"] %}
+{% else %}
+{% set PHASE_LABELS = ["Verify connections","Scope projects","Permission check","Extract issues","Compare fidelity","Config parity"] %}
+{% endif %}
+{% set PHASE_DESCS = [] %}
+{% endif %}
+{# total visible phases — drives the progress count + "of N" copy below #}
+{% set PHASE_N = PHASE_KEYS|length %}
+
+{# --- phase state derivation (server-side) ---
+   For each of the PHASE_N visible phases:
+     - status==done  → all phases done
+     - status==failed → phases before run.phase are done, run.phase is failed, rest todo
+     - status==cancelled → same as failed
+     - status==running → phases before run.phase are done, run.phase is run, rest todo
+   run.phase may be "finalize" (internal wrap-up) — treat it as all PHASE_N visible done.
+#}
+{% set cur_idx = PHASE_KEYS.index(run.phase) if run.phase in PHASE_KEYS else PHASE_N %}
+
+{% block topbar %}
+<div class="topbar">
+  <div class="crumb">
+    {% if mig and mig.audit_type == 'environment' %}
+    <a href="/environments">Environment audits</a>
+    {% else %}
+    <a href="/">Migration audits</a>
+    {% endif %}
+    <span class="sep">/</span>
+    <span>{{ mig.name }}</span>
+    <span class="sep">/</span>
+    <b>Run #{{ run.id }}</b>
+  </div>
+  <div class="spacer"></div>
+
+  {# status pill #}
+  {% if run.status == 'running' %}
+    <span class="pill v-run" id="status-pill">
+      <span class="dot"></span>
+      <span id="status-label">{{ run.phase.upper() if run.phase else 'RUNNING' }}</span>
+    </span>
+    <form method="post" action="/runs/{{ run.id }}/cancel" style="margin:0">
+      <button class="btn ghost sm">Cancel</button>
+    </form>
+  {% elif run.status == 'done' %}
+    {% if run.verdict == 'CLEAN' %}
+      <span class="pill v-clean"><span class="dot"></span>CLEAN</span>
+    {% elif run.verdict == 'CLEAN_WITH_TAILS' %}
+      <span class="pill v-tails"><span class="dot"></span>CLEAN · TAILS</span>
+    {% elif run.verdict == 'GAPS_FOUND' %}
+      <span class="pill v-gaps"><span class="dot"></span>GAPS FOUND</span>
+    {% elif run.verdict == 'CRITICAL' %}
+      <span class="pill v-crit"><span class="dot"></span>CRITICAL</span>
+    {# env-audit verdicts (auditor/envaudit/report.py): mapped to the pill tone
+       at the matching severity — NEEDS_ATTENTION reads amber, not teal. #}
+    {% elif run.verdict == 'NEEDS_ATTENTION' %}
+      <span class="pill v-gaps"><span class="dot"></span>NEEDS ATTENTION</span>
+    {% elif run.verdict == 'HEALTHY_WITH_NOTES' %}
+      <span class="pill v-tails"><span class="dot"></span>HEALTHY · NOTES</span>
+    {% elif run.verdict == 'HEALTHY' %}
+      <span class="pill v-clean"><span class="dot"></span>HEALTHY</span>
+    {% else %}
+      <span class="pill v-clean"><span class="dot"></span>DONE</span>
+    {% endif %}
+    <a class="btn" href="/runs/{{ run.id }}/analysis">Open analysis →</a>
+  {% elif run.status == 'failed' %}
+    <span class="pill v-crit"><span class="dot"></span>FAILED</span>
+  {% elif run.status == 'cancelled' %}
+    <span class="pill v-tails"><span class="dot"></span>CANCELLED</span>
+  {% else %}
+    <span class="pill v-tails"><span class="dot"></span>{{ run.status.upper() }}</span>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block content %}
+<style>
+  /* ── scoped console-native polish for the live run view ──────────── */
+  /* one-line phase description (env-audit phases only) */
+  .ph-desc {
+    display: block;
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--text-dim);
+    letter-spacing: 0;
+    text-transform: none;
+    margin-top: 2px;
+  }
+  /* phase card header rail */
+  .run-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 12px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--border-dim);
+  }
+  .run-card-title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+  }
+  .run-phase-count {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-mono);
+    background: var(--bg-input);
+    border: 1px solid var(--border-dim);
+    border-radius: 6px;
+    padding: 2px 9px;
+  }
+
+  /* native console-window frame around the streaming terminal */
+  .term-shell {
+    margin-top: 18px;
+    border: 1px solid var(--border-dim);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: #0a0b0d;
+    box-shadow: var(--shadow);
+  }
+  .term-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 14px;
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border-dim);
+  }
+  .term-dots { display: inline-flex; gap: 6px; flex: 0 0 auto; }
+  .term-dots i {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--border-bright);
+    display: inline-block;
+  }
+  .term-dots i:nth-child(1) { background: rgba(255,59,92,0.55); }
+  .term-dots i:nth-child(2) { background: rgba(245,166,35,0.55); }
+  .term-dots i:nth-child(3) { background: rgba(0,214,143,0.55); }
+  .term-label {
+    flex: 1;
+    font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 0.02em;
+  }
+  .term-live {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--cyan-vivid);
+    flex: 0 0 auto;
+  }
+  .term-live-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--cyan-vivid);
+    box-shadow: 0 0 6px var(--cyan-vivid);
+    animation: blink 1s step-end infinite;
+  }
+  .term-live-idle { color: var(--text-dim); }
+
+  /* the .term keeps its app.css styling; we only merge it into the frame */
+  .term-shell .term {
+    margin-top: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+</style>
+<h1 class="h1" style="margin-top:0">Auditing {{ mig.name }}</h1>
+<p class="sub">
+  {% if run.status == 'running' %}
+    Phase {{ cur_idx + 1 }} of {{ PHASE_N }} · running
+  {% elif run.status == 'done' %}
+    Completed · all phases passed
+  {% elif run.status == 'failed' %}
+    Failed at phase {{ cur_idx + 1 }} of {{ PHASE_N }}
+  {% elif run.status == 'cancelled' %}
+    Cancelled
+  {% else %}
+    Run #{{ run.id }}
+  {% endif %}
+</p>
+
+<div class="card pad run-card" style="margin-top:18px">
+  <div class="run-card-head">
+    <span class="run-card-title">Audit pipeline</span>
+    <span class="run-phase-count mono">
+      {% if run.status == 'done' %}{{ PHASE_N }}{% else %}{{ cur_idx if cur_idx <= PHASE_N else PHASE_N }}{% endif %} / {{ PHASE_N }}
+    </span>
+  </div>
+  <div class="phases" id="phases">
+    {% for i in range(PHASE_KEYS|length) %}
+      {% set key = PHASE_KEYS[i] %}
+      {% set label = PHASE_LABELS[i] %}
+
+      {# determine per-phase class #}
+      {% if run.status == 'done' %}
+        {% set ph_class = 'done' %}
+      {% elif run.status in ('failed','cancelled') %}
+        {% if i < cur_idx %}
+          {% set ph_class = 'done' %}
+        {% elif i == cur_idx %}
+          {% set ph_class = 'todo' %}  {# failed phase — no special class, just todo styling #}
+        {% else %}
+          {% set ph_class = 'todo' %}
+        {% endif %}
+      {% elif run.status == 'running' %}
+        {% if i < cur_idx %}
+          {% set ph_class = 'done' %}
+        {% elif i == cur_idx %}
+          {% set ph_class = 'run' %}
+        {% else %}
+          {% set ph_class = 'todo' %}
+        {% endif %}
+      {% else %}
+        {% set ph_class = 'todo' %}
+      {% endif %}
+
+    <div class="ph {{ ph_class }}" id="ph-{{ key }}" data-idx="{{ i }}">
+      <span class="ic">
+        {% if ph_class == 'done' %}
+          <svg width="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>
+        {% elif ph_class == 'run' %}
+          <span class="spin"></span>
+        {% else %}
+          {{ i + 1 }}
+        {% endif %}
+      </span>
+      <span class="pn">{{ label }}{% if PHASE_DESCS and PHASE_DESCS[i] %}<span class="ph-desc">{{ PHASE_DESCS[i] }}</span>{% endif %}</span>
+      <span class="det" id="det-{{ key }}"></span>
+    </div>
+    {% endfor %}
+  </div>
+
+  {# progress bar: count done phases #}
+  {% if run.status == 'done' %}
+    {% set done_count = PHASE_N %}
+  {% elif run.status == 'running' %}
+    {% set done_count = cur_idx %}
+  {% else %}
+    {% set done_count = cur_idx %}
+  {% endif %}
+  <div class="progress">
+    <div class="fill" id="progress-fill" style="width:{{ (done_count / PHASE_N * 100)|int }}%"></div>
+  </div>
+</div>
+
+{# terminal log #}
+<div class="term-shell">
+  <div class="term-bar">
+    <span class="term-dots"><i></i><i></i><i></i></span>
+    <span class="term-label mono">run-{{ run.id }} · event stream</span>
+    {% if run.status == 'running' %}
+      <span class="term-live mono"><span class="term-live-dot"></span>live</span>
+    {% else %}
+      <span class="term-live term-live-idle mono">log</span>
+    {% endif %}
+  </div>
+  <pre id="log" class="term"></pre>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  /* ── constants ─────────────────────────────────────────────────── */
+  const PHASE_KEYS   = {{ PHASE_KEYS | tojson }};
+  const PHASE_LABELS = {{ PHASE_LABELS | tojson }};
+  const RUN_STATUS   = {{ run.status | tojson }};
+  const RUN_ID       = {{ run.id }};
+
+  /* ── helpers ─────────────────────────────────────────────────────── */
+  function fmtTs(ts) {
+    if (!ts && ts !== 0) return new Date().toTimeString().slice(0, 8);
+    const d = new Date(ts * 1000);
+    return d.toTimeString().slice(0, 8);
+  }
+
+  function checkSvg() {
+    return '<svg width="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">'
+         + '<path d="M5 13l4 4L19 7"/></svg>';
+  }
+
+  function spinEl() {
+    return '<span class="spin"></span>';
+  }
+
+  // HTML-escape before any innerHTML concatenation. appendLog streams event
+  // messages — which now include raw external-API prose (AI error strings) and
+  // user-controlled values (display_name from /myself) — into innerHTML, so any
+  // <, >, & must be neutralised or it injects arbitrary HTML.
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c];
+    });
+  }
+
+  /* ── phase checklist updater ──────────────────────────────────────── */
+  let currentPhaseIdx = -1;
+
+  function setPhaseState(key, state) {
+    const el = document.getElementById('ph-' + key);
+    if (!el) return;
+    el.classList.remove('done', 'run', 'todo');
+    el.classList.add(state);
+    const ic = el.querySelector('.ic');
+    if (!ic) return;
+    const idx = PHASE_KEYS.indexOf(key);
+    if (state === 'done') {
+      ic.innerHTML = checkSvg();
+    } else if (state === 'run') {
+      ic.innerHTML = spinEl();
+    } else {
+      ic.textContent = String(idx + 1);
+    }
+  }
+
+  function advanceToPhase(key) {
+    const newIdx = PHASE_KEYS.indexOf(key);
+    if (newIdx < 0) return;
+    if (newIdx <= currentPhaseIdx) return; // already at or past this phase
+
+    // mark everything before newIdx as done
+    for (let i = 0; i < newIdx; i++) {
+      setPhaseState(PHASE_KEYS[i], 'done');
+    }
+    // mark the new current phase as running
+    setPhaseState(key, 'run');
+    // mark everything after as todo
+    for (let i = newIdx + 1; i < PHASE_KEYS.length; i++) {
+      setPhaseState(PHASE_KEYS[i], 'todo');
+    }
+
+    currentPhaseIdx = newIdx;
+
+    // update progress bar: number of completed phases = newIdx (phases before current)
+    const fill = document.getElementById('progress-fill');
+    if (fill) fill.style.width = Math.round(newIdx / PHASE_KEYS.length * 100) + '%';
+
+    // update topbar pill label
+    const lbl = document.getElementById('status-label');
+    if (lbl) lbl.textContent = key.toUpperCase();
+  }
+
+  function markAllDone() {
+    for (const k of PHASE_KEYS) setPhaseState(k, 'done');
+    const fill = document.getElementById('progress-fill');
+    if (fill) fill.style.width = '100%';
+  }
+
+  /* ── log appender ─────────────────────────────────────────────────── */
+  const logEl = document.getElementById('log');
+
+  function appendLog(ev) {
+    const ts    = fmtTs(ev.ts);
+    const phase = ev.phase || '';
+    const msg   = ev.message || '';
+    const level = ev.level || 'info';
+
+    const safeMsg = esc(msg);
+    let line = '<span class="t">' + esc(ts) + '</span>'
+             + ' <span class="ph2">[' + esc(phase) + ']</span>'
+             + ' ';
+
+    if (level === 'warn') {
+      line += '<span class="wn">' + safeMsg + '</span>';
+    } else if (level === 'info' && (msg.startsWith('phase done') || msg.startsWith('run complete'))) {
+      line += '<span class="ok2">' + safeMsg + '</span>';
+    } else {
+      line += safeMsg;
+    }
+
+    logEl.innerHTML += line + '\n';
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  /* ── main SSE connection (only while running) ────────────────────── */
+  if (RUN_STATUS === 'running') {
+    const es = new EventSource('/runs/' + RUN_ID + '/stream');
+
+    es.onmessage = function (e) {
+      let ev = {};
+      try { ev = JSON.parse(e.data); } catch (_) {}
+
+      // append to log
+      appendLog(ev);
+
+      // advance phase checklist if this event has a phase
+      if (ev.phase && PHASE_KEYS.includes(ev.phase)) {
+        advanceToPhase(ev.phase);
+      }
+    };
+
+    es.addEventListener('done', function () {
+      es.close();
+      location.reload();
+    });
+
+    es.onerror = function () {
+      // Connection lost; stop trying after a moment
+      es.close();
+    };
+  }
+
+  /* ── load historical events for done/failed/cancelled runs ──────── */
+  if (RUN_STATUS !== 'running') {
+    // fetch the stream endpoint — it yields all stored events then "done"
+    fetch('/runs/' + RUN_ID + '/stream')
+      .then(function (resp) { return resp.text(); })
+      .then(function (text) {
+        const lines = text.split('\n');
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            let ev = {};
+            try { ev = JSON.parse(line.slice(6)); } catch (_) {}
+            if (ev.message) appendLog(ev);
+          }
+        }
+      })
+      .catch(function () {}); // silent if fetch fails
+  }
+})();
+</script>
+{% endblock %}

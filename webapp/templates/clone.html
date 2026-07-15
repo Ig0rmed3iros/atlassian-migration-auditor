@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block topbar %}
+<div class="topbar">
+  <div class="crumb"><a href="/">Migrations</a><span class="sep">/</span><b>Clone access</b></div>
+  <div class="spacer"></div>
+</div>
+{% endblock %}
+
+{% block content %}
+<h1 class="h1">Clone access</h1>
+<p class="sub">Additively clone a user's groups &amp; project roles onto another account. Preview is read-only; Apply writes.</p>
+
+{% if error %}
+<div class="flash err">
+  <svg width="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4m0 4h.01"/></svg>
+  <span>{{ error }}</span>
+</div>
+{% endif %}
+
+<div class="section-h" style="margin-top:24px">Clone configuration</div>
+<div class="card pad" style="margin-top:0;max-width:620px">
+  <form method="post" enctype="multipart/form-data" action="/clone/preview" id="clone-form">
+    <div class="field">
+      <label>Instance (saved Jira connection)</label>
+      <select name="conn_id" required style="width:100%;padding:9px 11px;background:var(--bg-input);border:1px solid var(--border-mid);border-radius:8px;font-family:inherit;font-size:13.5px;color:var(--text-primary);">
+        {% for c in connections %}
+        <option value="{{ c.id }}" {% if sel_conn == c.id %}selected{% endif %}>{{ c.name }} — {{ c.site_url }}</option>
+        {% endfor %}
+      </select>
+      {% if not connections %}
+      <div class="hint" style="margin-top:6px">No Jira connections saved yet. <a href="/connections" class="text-cyan">Add one →</a></div>
+      {% endif %}
+    </div>
+    <div class="row" style="align-items:flex-start;gap:14px;margin-top:16px">
+      <div class="field" style="flex:1;margin-top:0">
+        <label>Main account (accountId or email)</label>
+        <input name="main" placeholder="admin@acme-source.example" style="width:100%">
+      </div>
+      <div class="field" style="flex:1;margin-top:0">
+        <label>Clone account (accountId or email)</label>
+        <input name="clone" placeholder="admin@acme-target.example" style="width:100%">
+      </div>
+    </div>
+    <div class="field">
+      <label>Or upload a CSV with <code>main,clone</code> columns</label>
+      <input type="file" name="csv_file" accept=".csv">
+    </div>
+    <div class="field" style="display:flex;align-items:center;gap:8px">
+      <input type="checkbox" name="dry_run" value="1" id="dry_run" style="width:auto;margin:0">
+      <label for="dry_run" style="margin:0;font-weight:normal;color:var(--ink-2)">Dry-run apply (scan roles, write nothing)</label>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:20px">
+      <button class="btn ghost" type="submit">Preview (no writes)</button>
+      <button class="btn btn-danger" type="submit" formaction="/clone/apply"
+              onclick="return confirm('Apply additive changes to live Jira?')">Apply</button>
+    </div>
+  </form>
+</div>
+
+{% if report %}
+<div class="section-h" style="margin-top:28px">{{ 'Preview' if is_preview else 'Result' }}</div>
+<div class="card pad" style="margin-top:0">
+  <p class="sub" style="margin:0 0 14px">
+    <b>{{ report.summary.pairs }}</b> pair(s) &nbsp;·&nbsp;
+    +<b>{{ report.summary.groups_added }}</b> groups &nbsp;·&nbsp;
+    +<b>{{ report.summary.roles_added }}</b> roles &nbsp;·&nbsp;
+    <b>{{ report.summary.blocked }}</b> blocked &nbsp;·&nbsp;
+    <b>{{ report.summary.failed }}</b> failed
+    {% if not report.scanned_roles %}<span class="muted">&nbsp;(roles not scanned — preview)</span>{% endif %}
+  </p>
+  <table class="data">
+    <thead>
+      <tr>
+        <th scope="col">Main</th>
+        <th scope="col">Clone</th>
+        <th scope="col">Status</th>
+        <th scope="col">Groups +</th>
+        <th scope="col">Roles +</th>
+        <th scope="col">Note</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for p in report.pairs %}
+      <tr>
+        <td class="mono">{{ p.main }}</td>
+        <td class="mono">{{ p.clone }}</td>
+        <td><span class="pill {% if p.status == 'ok' %}v-clean{% elif p.status == 'blocked' %}v-tails{% elif p.status == 'failed' %}v-crit{% else %}v-gaps{% endif %}">{{ p.status }}</span></td>
+        <td class="mono" style="font-size:12px">{{ p.groups.added | join(', ') }}</td>
+        <td class="mono" style="font-size:12px">{{ p.roles.added | join(', ') }}</td>
+        <td style="font-size:12px;color:var(--ink-3)">{{ p.reason or '' }}{% for f in p.groups.failed + p.roles.failed %} <span class="pill v-crit" style="font-size:10px">FAIL {{ f }}</span>{% endfor %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<div class="section-h" style="margin-top:28px">Recent clone runs</div>
+<div class="card pad" style="margin-top:0">
+  {% if runs %}
+  <ul style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px">
+    {% for r in runs %}
+    <li style="display:flex;align-items:center;gap:10px">
+      <a href="/clone/runs/{{ r.id }}" style="font-family:var(--font-mono);font-size:13px;color:var(--blue)">#{{ r.id }}</a>
+      <span class="pill {% if r.status == 'done' %}v-clean{% elif r.status == 'running' %}v-run{% elif r.status == 'failed' %}v-crit{% else %}v-tails{% endif %}" style="font-size:10px">{{ r.status }}</span>
+      {% if r.phase %}<span class="muted" style="font-size:12px">{{ r.phase }}</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <span class="muted">No clone runs yet.</span>
+  {% endif %}
+</div>
+
+<style>
+.field label { display:block; font-size:13px; font-weight:600; color:var(--ink-2); margin-bottom:5px; }
+.field input[type=text], .field input:not([type=checkbox]):not([type=file]) {
+  width:100%; padding:9px 11px; background:var(--bg-input); border:1px solid var(--border-mid);
+  border-radius:8px; font-family:inherit; font-size:13.5px; color:var(--text-primary);
+  box-sizing:border-box;
+}
+.field input:focus { outline:none; border-color:var(--cyan-border); box-shadow:0 0 0 3px rgba(34,211,238,0.12); }
+.field input::placeholder { color:var(--ink-3); }
+</style>
+{% endblock %}

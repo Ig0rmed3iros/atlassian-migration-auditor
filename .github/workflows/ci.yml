@@ -1,0 +1,58 @@
+name: CI
+
+# Runs the full offline test suite. The suite is the codebase's primary safety
+# asset (live-write guards, privacy boundary, fidelity correctness) and uses
+# httpx.MockTransport throughout, so it needs no network and no real
+# Atlassian/AI credentials.
+#
+# Triggers: pushes to master + any pull request. NOT every feature-branch push —
+# that fires a redundant run per push (the PR event already covers branch
+# updates) and floods notifications.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install (editable + dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Run tests
+        run: pytest -q
+
+  # Separate job so the optional WeasyPrint system-lib setup can't make the core
+  # matrix flaky. Installs the [pdf] extra + pango/cairo so the PDF-render tests
+  # (SSRF url-fetcher hardening, page-bound, real %PDF output) actually run in CI
+  # instead of being importorskip-ped.
+  test-pdf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: WeasyPrint system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf-2.0-0 \
+            libcairo2 libffi-dev
+      - name: Install (editable + dev + pdf)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,pdf]"
+      - name: Run the report/PDF tests
+        run: pytest -q tests/test_report.py

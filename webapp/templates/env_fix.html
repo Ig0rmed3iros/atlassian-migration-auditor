@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+
+{% block topbar %}
+<div class="topbar">
+  <div class="crumb">
+    <a href="/environments">Environment audits</a>
+    <span class="sep">/</span>
+    <span>{{ mig.name }}</span>
+    <span class="sep">/</span>
+    <a href="/runs/{{ run.id }}/analysis">Run #{{ run.id }}</a>
+    <span class="sep">/</span>
+    <b>Fix options</b>
+  </div>
+  <div class="spacer"></div>
+</div>
+{% endblock %}
+
+{% block content %}
+<h1 class="h1" style="margin-top:0">Environment fix options — {{ mig.name }}</h1>
+{% if error %}<p class="sub" role="alert" style="color:var(--red)">{{ error }}</p>{% endif %}
+
+<form method="post" action="/runs/{{ run.id }}/env-fix" id="env-fix-form">
+  <input type="hidden" name="finding_refs" id="finding_refs_field" value="">
+
+  {# ── App-tier: auto-appliable (consent-gated), GROUPED by problem type ── #}
+  {% if app_groups %}
+  <div class="card pad" style="margin-top:18px">
+    <h2 class="h2" style="margin-top:0">
+      <span class="pill" style="background:var(--green-dim);color:var(--green)">App</span>
+      Fixable by the app
+    </h2>
+    <p class="sub">Each row is one problem type. Tick it to select <b>every</b> item of
+      that type, or expand to pick specific ones. Then confirm and apply.</p>
+
+    {% for g in app_groups %}
+    <div class="fix-group risk-{{ g.risk }}"
+         style="border:1px solid var(--border-dim);border-radius:6px;padding:10px 12px;margin-top:10px">
+      <label class="fix-grouphead" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" class="env-group-box" data-group-kind="{{ g.kind }}">
+        <span class="fix-label">
+          <b>{{ g.label }}</b>
+          <span class="sub" style="font-weight:600">({{ g.count }})</span>
+          <span class="pill">{{ g.risk }}</span>
+          <em class="tier" style="color:var(--text-dim)">{{ g.kind }}</em>
+        </span>
+      </label>
+      {% if g.detail %}<p class="sub" style="margin:4px 0 0 26px">{{ g.detail }}</p>{% endif %}
+      {% if g.caveat %}<p class="sub" style="margin:2px 0 0 26px;color:var(--amber)">{{ g.caveat }}</p>{% endif %}
+      <details style="margin:6px 0 0 26px">
+        <summary class="sub" style="cursor:pointer">Show / fine-tune {{ g.count }} item{{ 's' if g.count != 1 else '' }}</summary>
+        <div class="fix-items" style="margin-top:6px">
+          {% for item in g['items'] %}
+          <label style="display:block;padding:2px 0">
+            <input type="checkbox" class="env-fixbox" value="{{ item.ref }}"
+                   data-kind="{{ g.kind }}" data-name="{{ item.name }}">
+            <span class="mono" style="font-size:12px">{{ item.name }}</span>
+          </label>
+          {% endfor %}
+        </div>
+      </details>
+    </div>
+    {% endfor %}
+
+    <div style="margin-top:14px">
+      <label>
+        <input type="checkbox" name="consent" value="1" id="env-consent-box">
+        I confirm these are safe to delete from the live environment.
+      </label>
+    </div>
+    <div id="env-preview" style="margin-top:8px;color:var(--text-dim)">Nothing selected.</div>
+  </div>
+  {% else %}
+  <div class="card pad" style="margin-top:18px">
+    <p class="sub">No app-tier findings to apply for this run.</p>
+  </div>
+  {% endif %}
+
+  {# ── Read-only guidance tiers (human + unfixable), also GROUPED by problem
+        type so a 700-item kind collapses to one expandable row. ── #}
+  {% macro guide_groups(groups, accent) %}
+    {% for g in groups %}
+    <div class="guide-group risk-{{ g.risk }}"
+         style="border:1px solid var(--border-dim);border-radius:6px;padding:10px 12px;margin-top:10px">
+      <div class="fix-label">
+        <b>{{ g.label }}</b>
+        <span class="sub" style="font-weight:600">({{ g.count }})</span>
+        <em class="tier" style="color:var(--text-dim)">{{ g.kind }}</em>
+      </div>
+      {% if g.detail %}<p class="sub" style="margin:4px 0 0">{{ g.detail }}</p>{% endif %}
+      {% if g.caveat %}<p class="sub" style="margin:2px 0 0;color:var(--{{ accent }})">{{ g.caveat }}</p>{% endif %}
+      <details style="margin:6px 0 0">
+        <summary class="sub" style="cursor:pointer">Show {{ g.count }} affected item{{ 's' if g.count != 1 else '' }}</summary>
+        <div class="guide-items mono" style="margin-top:6px;font-size:12px;color:var(--text-dim)">
+          {% for item in g['items'] %}
+          <div style="padding:1px 0">{{ item.name }}</div>
+          {% endfor %}
+        </div>
+      </details>
+    </div>
+    {% endfor %}
+  {% endmacro %}
+
+  {# ── Human-tier: read-only guidance ── #}
+  {% if human_groups %}
+  <div class="card pad" style="margin-top:18px">
+    <h2 class="h2" style="margin-top:0">
+      <span class="pill" style="background:var(--amber-dim);color:var(--amber)">Human</span>
+      Fixable by a human
+      <span class="sub" style="font-size:12px;font-weight:400"> — read-only guidance, cannot be applied automatically</span>
+    </h2>
+    {{ guide_groups(human_groups, 'amber') }}
+  </div>
+  {% endif %}
+
+  {# ── Unfixable: re-migration guidance ── #}
+  {% if unfixable_groups %}
+  <div class="card pad" style="margin-top:18px">
+    <h2 class="h2" style="margin-top:0">
+      <span class="pill" style="background:var(--red-dim);color:var(--red)">Re-migration</span>
+      Re-migration suggested
+      <span class="sub" style="font-size:12px;font-weight:400"> — read-only guidance</span>
+    </h2>
+    {{ guide_groups(unfixable_groups, 'red') }}
+  </div>
+  {% endif %}
+
+  {% if app_groups %}
+  {# Default to PREVIEW (fail-safe): any submission path that does not pass the
+     explicit live-delete confirm leaves this at "1", so the server runs a
+     read-only preview rather than a live delete. #}
+  <input type="hidden" name="dry_run" id="env-dry-run-field" value="1">
+  <div style="margin-top:18px;display:flex;gap:10px;align-items:center">
+    <button class="btn ghost" type="submit" id="env-preview-btn">Preview (no changes)</button>
+    <button class="btn btn-danger" type="submit" id="env-apply-btn"
+            data-confirm="This permanently DELETES the selected objects from the live environment. This cannot be undone. Continue?">Delete selected from live environment</button>
+  </div>
+  <div class="muted" style="font-size:11.5px;margin-top:6px">
+    Preview runs every safety check against the live environment (resolve,
+    built-in protection, in-use re-verify) and reports exactly what would be
+    changed, without writing anything. Consent is only required to Apply.
+  </div>
+  {% endif %}
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var childBoxes = Array.from(document.querySelectorAll('.env-fixbox'));
+  var groupBoxes = Array.from(document.querySelectorAll('.env-group-box'));
+  var refsField = document.getElementById('finding_refs_field');
+  var preview = document.getElementById('env-preview');
+
+  function childrenOf(kind) {
+    return childBoxes.filter(function (b) { return b.dataset.kind === kind; });
+  }
+  // Reflect the children's state back onto the parent: checked when all are,
+  // indeterminate when only some are.
+  function syncGroup(gb) {
+    var kids = childrenOf(gb.dataset.groupKind);
+    var on = kids.filter(function (b) { return b.checked; }).length;
+    gb.checked = on > 0 && on === kids.length;
+    gb.indeterminate = on > 0 && on < kids.length;
+  }
+  // The hidden finding_refs field is ALWAYS built from the individual child
+  // boxes (the real targets) — the group box is only a select-all convenience.
+  function update() {
+    var sel = childBoxes.filter(function (b) { return b.checked; });
+    refsField.value = sel.map(function (b) { return b.value; }).join(',');
+    preview.textContent = sel.length === 0
+      ? 'Nothing selected.'
+      : sel.length + ' item(s) selected across '
+        + groupBoxes.filter(function (gb) {
+            return childrenOf(gb.dataset.groupKind).some(function (b) { return b.checked; });
+          }).length + ' problem type(s).';
+    groupBoxes.forEach(syncGroup);
+  }
+  // Ticking a group selects/clears every item of that problem type.
+  groupBoxes.forEach(function (gb) {
+    gb.addEventListener('change', function () {
+      childrenOf(gb.dataset.groupKind).forEach(function (b) { b.checked = gb.checked; });
+      gb.indeterminate = false;
+      update();
+    });
+  });
+  childBoxes.forEach(function (b) { b.addEventListener('change', update); });
+
+  // Two submit buttons share one form: Preview sets dry_run=1 (a read-only,
+  // consent-exempt run); Apply clears it (the live, consent-gated run). The
+  // click handler fires before the native submit, so the hidden field is set
+  // by the time the POST body is built.
+  var dryField = document.getElementById('env-dry-run-field');
+  var pbtn = document.getElementById('env-preview-btn');
+  var abtn = document.getElementById('env-apply-btn');
+  var form = document.getElementById('env-fix-form');
+
+  // Gate on the FORM's submit event (not a button click) so EVERY submission
+  // path is covered — button click, Enter-key implicit submit, requestSubmit().
+  // The field defaults to preview ("1"); it is set to live ("") ONLY after the
+  // confirm passes, so an un-confirmed submit can never do a live delete.
+  if (form) form.addEventListener('submit', function (e) {
+    if (e.submitter === pbtn) { dryField.value = '1'; return; }   // explicit Preview
+    // Apply button OR an ambiguous implicit submit -> the live, irreversible
+    // path. Require an informed confirm that names the blast radius.
+    var sel = childBoxes.filter(function (b) { return b.checked; });
+    var names = sel.slice(0, 8).map(function (b) {
+      return '  • ' + (b.dataset.kind || '?') + ': ' + (b.dataset.name || '?');
+    });
+    if (sel.length > 8) names.push('  • …and ' + (sel.length - 8) + ' more');
+    var warn = (abtn && abtn.getAttribute('data-confirm'))
+      || 'Apply changes to the live environment?';
+    var msg = sel.length
+      ? sel.length + ' object(s) will be PERMANENTLY DELETED from the live '
+        + 'environment:\n\n' + names.join('\n') + '\n\n' + warn
+      : warn;
+    if (window.confirm(msg)) { dryField.value = ''; }   // confirmed -> live
+    else { e.preventDefault(); }                        // cancelled -> no submit
+  });
+
+  update();
+})();
+</script>
+{% endblock %}
